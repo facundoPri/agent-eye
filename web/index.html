@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent Eye</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#111315; --panel:#1a1d20; --line:#2b3035; --fg:#e8eaec; --dim:#8a929a; --accent:#5bb0ff; --ok:#5fd38d; --bad:#ff7b72; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 -apple-system, system-ui, sans-serif; display:grid; grid-template-columns: 1fr 340px; height:100vh; }
+  main { padding:16px; display:flex; flex-direction:column; gap:10px; min-width:0; }
+  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.02em; }
+  h1 span { color:var(--dim); font-weight:400; }
+  #stage { position:relative; flex:1; min-height:0; background:#000; border:1px solid var(--line); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  #frame { position:relative; overflow:hidden; max-width:100%; max-height:100%; }
+  #view { display:block; width:100%; height:100%; transform-origin:0 0; cursor:crosshair; user-select:none; -webkit-user-drag:none; }
+  #grid { position:absolute; inset:0; pointer-events:none; display:none;
+    background: linear-gradient(to right, transparent 33.2%, #ffffff55 33.3%, transparent 33.5%, transparent 66.5%, #ffffff55 66.7%, transparent 66.8%),
+                linear-gradient(to bottom, transparent 33.2%, #ffffff55 33.3%, transparent 33.5%, transparent 66.5%, #ffffff55 66.7%, transparent 66.8%); }
+  #cross { position:absolute; left:50%; top:50%; width:24px; height:24px; margin:-12px; pointer-events:none; display:none; border:1px solid #ffdf5e; border-radius:50%; }
+  #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; color:var(--dim); white-space:pre-wrap; }
+  #msg.err { color:var(--bad); }
+  #stats { color:var(--dim); font-variant-numeric:tabular-nums; display:flex; gap:16px; flex-wrap:wrap; }
+  aside { background:var(--panel); border-left:1px solid var(--line); padding:16px; overflow:auto; display:flex; flex-direction:column; gap:12px; }
+  label { display:flex; flex-direction:column; gap:4px; color:var(--dim); font-size:12px; }
+  label b { color:var(--fg); font-weight:500; float:right; font-variant-numeric:tabular-nums; }
+  select, input[type=text], input[type=number] { width:100%; min-width:0; background:#101214; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 8px; font:inherit; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:10px; display:flex; flex-direction:column; gap:10px; margin:0; }
+  legend { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 6px; }
+  button { background:var(--accent); color:#06121f; border:0; border-radius:6px; padding:9px 12px; font:inherit; font-weight:600; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); font-weight:500; }
+  button:disabled { opacity:.45; cursor:default; }
+  .check { flex-direction:row; align-items:center; gap:8px; color:var(--fg); }
+  #note { color:var(--dim); font-size:12px; min-height:2.6em; }
+  #saved { color:var(--ok); font-size:12px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Agent Eye <span id="modeLabel"></span></h1>
+  <div id="stage">
+    <div id="frame"><img id="view" alt=""><div id="grid"></div><div id="cross"></div></div>
+    <div id="msg">Loading cameras…</div>
+  </div>
+  <div id="stats"><span id="fpsStat"></span><span id="cropStat"></span><span id="outStat"></span></div>
+</main>
+<aside>
+  <label>Camera <select id="camera"></select></label>
+  <div class="row">
+    <label>Resolution <select id="size"></select></label>
+    <label>Frame rate <select id="fps"></select></label>
+  </div>
+  <div id="slowNote" class="hidden" style="color:var(--dim);font-size:12px"></div>
+  <fieldset>
+    <legend>Framing</legend>
+    <label id="zoomRow">Camera zoom (lossless) <b id="zoomV">1.0×</b><input id="zoom" type="range" min="1" max="10" step="0.1" value="1"></label>
+    <label>Digital zoom (crop) <b id="dzV">1.0×</b><input id="dz" type="range" min="1" max="8" step="0.05" value="1"></label>
+    <div class="row">
+      <label>Center X <b id="cxV">50%</b><input id="cx" type="range" min="0" max="1" step="0.005" value="0.5"></label>
+      <label>Center Y <b id="cyV">50%</b><input id="cy" type="range" min="0" max="1" step="0.005" value="0.5"></label>
+    </div>
+    <label>Rotate <select id="rotate"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
+    <label class="check"><input id="showGrid" type="checkbox"> Thirds grid and center mark</label>
+  </fieldset>
+  <label>Bitrate (Mbit/s, blank = automatic) <input id="bitrate" type="number" min="1" max="200" step="1" placeholder="auto"></label>
+  <label>Profile name <input id="name" type="text" value="default"></label>
+  <div id="note"></div>
+  <button id="save">Confirm and save</button>
+  <div id="saved"></div>
+  <fieldset>
+    <legend>Agent skill</legend>
+    <div id="skillState" style="font-size:12px;color:var(--dim)">Checking…</div>
+    <button id="skill" class="secondary" disabled>Add skill to project</button>
+  </fieldset>
+  <button id="done" class="secondary">Close and release the camera</button>
+</aside>
+<script>
+const TOKEN = '__TOKEN__';
+const $ = (id) => document.getElementById(id);
+const api = async (path, body) => {
+  const r = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-agent-eye-token': TOKEN, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error + (j.hint ? `\n${j.hint}` : ''));
+  return j;
+};
+const SIZES_MAC = ['1920x1080', '1280x720', '640x480'];
+let devices = [], state = null, macModes = {}, restartTimer = null, previewId = null, previewAt = 0;
+
+const device = () => devices.find((d) => d.id === $('camera').value);
+const showMsg = (t, err = false) => { $('msg').textContent = t; $('msg').className = err ? 'err' : ''; $('msg').classList.toggle('hidden', !t); };
+
+function fpsOptionsFor(dev, size) {
+  if (dev?.kind === 'android') {
+    const c = dev.caps, hs = c.highSpeed.find((h) => h.size === size);
+    const base = c.sizes.includes(size) ? c.fps.filter((f) => [24, 30, 60].includes(f)) : [];
+    return [...new Set([...base, ...(hs?.fps ?? [])])].sort((a, b) => a - b);
+  }
+  const m = (macModes[dev?.id] ?? []).find((x) => x.size === size);
+  return [15, 24, 30, 60].filter((f) => !m || f <= m.maxFps);
+}
+function sizesFor(dev) {
+  if (dev?.kind === 'android') {
+    const c = dev.caps;
+    return [...new Set([...c.sizes, ...c.highSpeed.map((h) => h.size)])].sort((a, b) => (+b.split('x')[0]) - (+a.split('x')[0]));
+  }
+  const m = macModes[dev?.id];
+  return m?.length ? m.map((x) => x.size) : SIZES_MAC;
+}
+function fillSelect(sel, values, keep, labeler = String) {
+  sel.innerHTML = '';
+  for (const v of values) { const o = document.createElement('option'); o.value = v; o.textContent = labeler(v); sel.appendChild(o); }
+  if (keep !== undefined && values.map(String).includes(String(keep))) sel.value = String(keep);
+}
+const prettySize = (s) => ({ '3840x2160': '3840x2160 (4K)', '1920x1080': '1920x1080 (Full HD)', '1280x720': '1280x720 (HD)' }[s] ?? s);
+
+function currentProfile() {
+  const [width, height] = $('size').value.split('x').map(Number);
+  const dz = +$('dz').value, w = 1 / dz;
+  const x = Math.min(Math.max(+$('cx').value - w / 2, 0), 1 - w), y = Math.min(Math.max(+$('cy').value - w / 2, 0), 1 - w);
+  const r = (n) => Math.round(n * 10000) / 10000;
+  const p = { source: $('camera').value, width, height, fps: +$('fps').value, zoom: +$('zoom').value,
+    crop: dz > 1 ? { x: r(x), y: r(y), w: r(w), h: r(w) } : { x: 0, y: 0, w: 1, h: 1 }, rotate: +$('rotate').value };
+  if ($('bitrate').value) p.bitrate = +$('bitrate').value;
+  return p;
+}
+
+function applyView() {
+  const dz = +$('dz').value, w = 1 / dz;
+  const x = Math.min(Math.max(+$('cx').value - w / 2, 0), 1 - w), y = Math.min(Math.max(+$('cy').value - w / 2, 0), 1 - w);
+  $('view').style.transform = `scale(${dz}) translate(${-x * 100}%, ${-y * 100}%)`;
+  $('zoomV').textContent = (+$('zoom').value).toFixed(1) + '×'; $('dzV').textContent = dz.toFixed(2) + '×';
+  $('cxV').textContent = Math.round($('cx').value * 100) + '%'; $('cyV').textContent = Math.round($('cy').value * 100) + '%';
+  $('grid').style.display = $('cross').style.display = $('showGrid').checked ? 'block' : 'none';
+  const p = currentProfile();
+  const copy = p.source.startsWith('android:') && dz === 1 && p.rotate === 0;
+  $('cropStat').textContent = dz > 1 ? `crop ${Math.round(p.crop.w * p.width)}×${Math.round(p.crop.h * p.height)} px` : 'full frame';
+  $('outStat').textContent = copy ? 'records the phone stream as is (no re-encode)' : 'records with a re-encode (crop, rotate or Mac camera)';
+}
+
+function fitFrame() {
+  const dz = +$('dz').value; const [w, h] = ($('size').value || '16x9').split('x').map(Number);
+  const rot = +$('rotate').value % 180 !== 0; const aw = rot ? h : w, ah = rot ? w : h;
+  const st = $('stage').getBoundingClientRect();
+  const scale = Math.min(st.width / aw, st.height / ah);
+  $('frame').style.width = aw * scale + 'px'; $('frame').style.height = ah * scale + 'px';
+}
+
+async function restartPreview() {
+  clearTimeout(restartTimer);
+  const dev = device(); if (!dev) return;
+  const mine = ++previewAt;
+  showMsg('Starting camera…'); $('view').removeAttribute('src');
+  try {
+    const { id } = await api('/api/preview/start', { profile: currentProfile() });
+    if (mine !== previewAt) return;
+    previewId = id; $('view').src = `/stream?id=${id}&t=${TOKEN}&r=${Date.now()}`;
+  } catch (e) { if (mine === previewAt) showMsg(e.message, true); }
+}
+const scheduleRestart = () => { clearTimeout(restartTimer); restartTimer = setTimeout(restartPreview, 450); };
+$('view').addEventListener('load', () => showMsg(''));
+
+async function onCameraChange(keep = {}) {
+  const dev = device();
+  if (dev?.kind === 'mac' && !macModes[dev.id]) {
+    showMsg('Asking the camera which modes it supports…');
+    try { macModes[dev.id] = (await api('/api/mac-modes', { source: dev.id })).modes; } catch (e) { macModes[dev.id] = []; }
+  }
+  fillSelect($('size'), sizesFor(dev), keep.size ?? (sizesFor(dev).includes('1920x1080') ? '1920x1080' : undefined), prettySize);
+  onSizeChange(keep);
+}
+function onSizeChange(keep = {}) {
+  const dev = device(), size = $('size').value, opts = fpsOptionsFor(dev, size);
+  fillSelect($('fps'), opts, keep.fps ?? (opts.includes(30) ? 30 : opts[0]), (f) => f + ' fps' + (f > 60 ? ' (slow motion)' : ''));
+  const zr = dev?.kind === 'android' ? dev.caps.zoomRange : [1, 1];
+  $('zoomRow').classList.toggle('hidden', dev?.kind !== 'android');
+  $('zoom').min = zr[0]; $('zoom').max = zr[1]; if (keep.zoom) $('zoom').value = keep.zoom; else if (+$('zoom').value > zr[1]) $('zoom').value = 1;
+  onFpsChange(); fitFrame(); applyView(); scheduleRestart();
+}
+function onFpsChange() {
+  const f = +$('fps').value, size = $('size').value;
+  const el = $('slowNote');
+  el.classList.toggle('hidden', !(f > 60));
+  el.textContent = 'Slow motion: the preview stays at 15 fps; the recording uses the full rate. Bitrate defaults to 40 Mbit/s.';
+  $('note').textContent = '';
+}
+
+async function load() {
+  state = await api('/api/state');
+  $('modeLabel').textContent = '· ' + (state.mode === 'preview' ? 'preview' : 'configure');
+  const res = await api('/api/devices', {});
+  devices = res.devices;
+  if (!devices.length) { showMsg('No cameras found.\n' + res.problems.map((p) => `${p.model}: ${p.hint}`).join('\n'), true); return; }
+  fillSelect($('camera'), devices.map((d) => d.id), state.profile?.source, (id) => devices.find((d) => d.id === id).name);
+  if (!devices.some((d) => d.id === state.profile?.source)) {
+    const pref = devices.find((d) => d.kind === 'android' && d.name.includes('back')) ?? devices[0];
+    $('camera').value = pref.id;
+  }
+  const p = state.profile;
+  if (p) {
+    $('name').value = state.profileName; $('rotate').value = p.rotate ?? 0; $('bitrate').value = p.bitrate ?? '';
+    const dz = p.crop ? 1 / p.crop.w : 1; $('dz').value = dz;
+    $('cx').value = p.crop ? p.crop.x + p.crop.w / 2 : 0.5; $('cy').value = p.crop ? p.crop.y + p.crop.h / 2 : 0.5;
+  }
+  await onCameraChange(p && p.source === $('camera').value ? { size: `${p.width}x${p.height}`, fps: p.fps, zoom: p.zoom } : {});
+  if (res.problems.length) $('note').textContent = res.problems.map((q) => `${q.model}: ${q.hint}`).join('\n');
+}
+
+$('camera').onchange = () => onCameraChange();
+$('size').onchange = () => onSizeChange();
+$('fps').onchange = () => { onFpsChange(); applyView(); scheduleRestart(); };
+$('zoom').oninput = () => { applyView(); scheduleRestart(); };
+$('rotate').onchange = () => { fitFrame(); applyView(); scheduleRestart(); };
+for (const id of ['dz', 'cx', 'cy', 'showGrid']) $(id).oninput = applyView;
+$('bitrate').oninput = applyView;
+$('view').addEventListener('wheel', (e) => { e.preventDefault(); $('dz').value = Math.min(8, Math.max(1, +$('dz').value - Math.sign(e.deltaY) * 0.1)); applyView(); }, { passive: false });
+$('view').addEventListener('click', (e) => {
+  const r = $('frame').getBoundingClientRect(), dz = +$('dz').value, w = 1 / dz;
+  const x0 = Math.min(Math.max(+$('cx').value - w / 2, 0), 1 - w), y0 = Math.min(Math.max(+$('cy').value - w / 2, 0), 1 - w);
+  $('cx').value = x0 + ((e.clientX - r.left) / r.width) * w; $('cy').value = y0 + ((e.clientY - r.top) / r.height) * w; applyView();
+});
+addEventListener('resize', fitFrame);
+
+$('save').onclick = async () => {
+  $('save').disabled = true; $('saved').textContent = '';
+  try {
+    const r = await api('/api/save', { name: $('name').value.trim(), profile: currentProfile(), makeDefault: true });
+    $('saved').textContent = `Saved "${r.name}" to ${r.configPath}`;
+  } catch (e) { $('note').textContent = e.message; $('note').style.color = 'var(--bad)'; setTimeout(() => { $('note').style.color = ''; }, 6000); }
+  $('save').disabled = false;
+};
+function showSkill(st) {
+  const where = st.targets.map((t) => `${t.relative}: ${t.state}`).join('\n');
+  $('skillState').style.whiteSpace = 'pre-line';
+  const outdated = st.targets.some((t) => t.state === 'outdated');
+  const head = st.upToDate ? '✓ Installed and up to date in ' : outdated ? 'Outdated in ' : st.installed ? 'Missing in part of ' : 'Not installed in ';
+  $('skillState').textContent = head + st.projectRoot + '\n' + where;
+  $('skill').textContent = st.upToDate ? 'Skill installed' : st.installed ? 'Update skill' : 'Add skill to project';
+  $('skill').disabled = st.upToDate;
+}
+$('skill').onclick = async () => {
+  $('skill').disabled = true;
+  try { showSkill(await api('/api/skill/install', {})); } catch (e) { $('skillState').textContent = e.message; $('skill').disabled = false; }
+};
+api('/api/skill').then(showSkill).catch((e) => { $('skillState').textContent = e.message; });
+
+$('done').onclick = async () => { await api('/api/preview/stop', {}); await api('/api/done', {}); document.body.innerHTML = '<p style="padding:24px">You can close this tab.</p>'; };
+
+setInterval(async () => {
+  if (!previewId) return;
+  try { const s = await api('/api/preview/stats'); $('fpsStat').textContent = s.frames ? `preview ${s.fps.toFixed(1)} fps` : ''; } catch {}
+}, 1000);
+load().catch((e) => showMsg(e.message, true));
+</script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "name": "agent-eye",
+  "version": "0.1.0",
+  "description": "Eyes for agents: configure, preview and record cameras (Mac webcams, Android phone over USB) from a CLI.",
+  "type": "module",
+  "bin": {
+    "agent-eye": "bin/agent-eye.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "web",
+    "vendor",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "camera",
+    "ffmpeg",
+    "android",
+    "scrcpy",
+    "agent",
+    "cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/facundoPri/agent-eye.git"
+  },
+  "homepage": "https://github.com/facundoPri/agent-eye#readme",
+  "bugs": {
+    "url": "https://github.com/facundoPri/agent-eye/issues"
+  }
+}

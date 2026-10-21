@@ -1,0 +1,4 @@
+vendor/scrcpy-server-v4.1.jar is the unmodified scrcpy server, version 4.1,
+copyright Genymobile, licensed under the Apache License 2.0
+(https://github.com/Genymobile/scrcpy). It is pushed to the phone to read the
+camera over adb. Agent Eye talks to it directly and does not need scrcpy installed.

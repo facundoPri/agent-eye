@@ -1,0 +1,4 @@
+node_modules/
+.agent-eye/recordings/
+*.tgz
+proto/*.log
