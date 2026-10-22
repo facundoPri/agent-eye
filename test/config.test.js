@@ -42,6 +42,15 @@ test('first profile becomes default, later ones only on request', () => {
 
 test('profile names are restricted', () => {
   assert.throws(() => upsertProfile(emptyConfig(), '../evil', good), /Profile name/);
+  assert.throws(() => upsertProfile(emptyConfig(), '__proto__', good), /Profile name/);
+});
+
+test('inherited object keys are not profiles', () => {
+  const cfg = upsertProfile(emptyConfig(), 'constructor', good);
+  assert.deepEqual(JSON.parse(JSON.stringify(cfg)).profiles.constructor.source, good.source);
+  assert.equal(getProfile(cfg).name, 'constructor');
+  assert.throws(() => getProfile(emptyConfig(), 'toString'), /No profile named "toString"/);
+  assert.throws(() => getProfile(upsertProfile(emptyConfig(), 'a', good), 'hasOwnProperty'), /No profile named/);
 });
 
 test('getProfile explains what exists', () => {
