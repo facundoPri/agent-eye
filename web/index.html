@@ -5,85 +5,197 @@
 <title>Agent Eye</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { color-scheme: dark; --bg:#111315; --panel:#1a1d20; --line:#2b3035; --fg:#e8eaec; --dim:#8a929a; --accent:#5bb0ff; --ok:#5fd38d; --bad:#ff7b72; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 -apple-system, system-ui, sans-serif; display:grid; grid-template-columns: 1fr 340px; height:100vh; }
-  main { padding:16px; display:flex; flex-direction:column; gap:10px; min-width:0; }
-  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.02em; }
-  h1 span { color:var(--dim); font-weight:400; }
-  #stage { position:relative; flex:1; min-height:0; background:#000; border:1px solid var(--line); border-radius:8px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  :root {
+    color-scheme: dark;
+    --bg:#0e0f11; --panel:#141618; --raised:#1b1e21; --line:#25292e; --line-strong:#353a41;
+    --fg:#e8eaed; --dim:#8c939b; --faint:#646b73;
+    --accent:#4da3ff; --accent-hi:#79bbff; --on-accent:#04101c;
+    --ok:#4cc38a; --warn:#e5b94a; --bad:#ff7b72;
+    --r:8px; --r-lg:12px;
+  }
+  * { box-sizing:border-box; }
+  [hidden], .hidden { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #fpsStat, #cropStat, b { font-variant-numeric:tabular-nums; }
+
+  #app { display:grid; grid-template-columns:minmax(0,1fr) 360px; height:100vh; height:100dvh; }
+
+  /* Preview side */
+  main { padding:20px 24px 16px; display:flex; flex-direction:column; gap:12px; min-width:0; min-height:0; }
+  header { display:flex; align-items:center; gap:10px; }
+  h1 { margin:0; font-size:15px; font-weight:600; letter-spacing:.01em; }
+  #modeLabel { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.08em; border:1px solid var(--line); border-radius:99px; padding:1px 8px; }
+  #stage { position:relative; flex:1; min-height:200px; background:#000; border:1px solid var(--line); border-radius:var(--r-lg); overflow:hidden; display:flex; align-items:center; justify-content:center; }
   #frame { position:relative; overflow:hidden; max-width:100%; max-height:100%; }
   #view { display:block; width:100%; height:100%; transform-origin:0 0; cursor:crosshair; user-select:none; -webkit-user-drag:none; }
+  #view:not([src]) { visibility:hidden; }
   #grid { position:absolute; inset:0; pointer-events:none; display:none;
     background: linear-gradient(to right, transparent 33.2%, #ffffff55 33.3%, transparent 33.5%, transparent 66.5%, #ffffff55 66.7%, transparent 66.8%),
                 linear-gradient(to bottom, transparent 33.2%, #ffffff55 33.3%, transparent 33.5%, transparent 66.5%, #ffffff55 66.7%, transparent 66.8%); }
   #cross { position:absolute; left:50%; top:50%; width:24px; height:24px; margin:-12px; pointer-events:none; display:none; border:1px solid #ffdf5e; border-radius:50%; }
-  #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; color:var(--dim); white-space:pre-wrap; }
+  #chips { position:absolute; left:12px; bottom:12px; display:flex; gap:6px; pointer-events:none; }
+  #chips span { background:#000a; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); border:1px solid #ffffff1f; border-radius:99px; padding:2px 10px; font-size:12px; color:#dfe3e7; }
+  #chips span:empty { display:none; }
+  #fpsStat::before { content:""; display:inline-block; width:6px; height:6px; margin-right:7px; vertical-align:1px; border-radius:50%; background:var(--ok); }
+  #msg { position:absolute; inset:0; display:flex; flex-direction:column; gap:12px; align-items:center; justify-content:center; text-align:center; padding:24px; color:var(--dim); white-space:pre-wrap; background:#000c; }
   #msg.err { color:var(--bad); }
-  #stats { color:var(--dim); font-variant-numeric:tabular-nums; display:flex; gap:16px; flex-wrap:wrap; }
-  aside { background:var(--panel); border-left:1px solid var(--line); padding:16px; overflow:auto; display:flex; flex-direction:column; gap:12px; }
-  label { display:flex; flex-direction:column; gap:4px; color:var(--dim); font-size:12px; }
-  label b { color:var(--fg); font-weight:500; float:right; font-variant-numeric:tabular-nums; }
-  select, input[type=text], input[type=number] { width:100%; min-width:0; background:#101214; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 8px; font:inherit; }
-  input[type=range] { width:100%; accent-color:var(--accent); }
-  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  fieldset { border:1px solid var(--line); border-radius:8px; padding:10px; display:flex; flex-direction:column; gap:10px; margin:0; }
-  legend { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; padding:0 6px; }
-  button { background:var(--accent); color:#06121f; border:0; border-radius:6px; padding:9px 12px; font:inherit; font-weight:600; cursor:pointer; }
-  button.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); font-weight:500; }
+  #msg.act { cursor:pointer; }
+  #msg.act:not(.err):hover { color:var(--fg); }
+  #msg.err.act:hover { text-decoration:underline; }
+  #msg.busy::before { content:""; width:18px; height:18px; border:2px solid var(--line-strong); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .caption { display:flex; justify-content:space-between; gap:16px; color:var(--dim); font-size:12px; min-height:1.45em; }
+  .caption .tip { color:var(--faint); white-space:nowrap; }
+
+  /* Controls side */
+  aside { background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .scroll { flex:1; overflow:auto; padding:18px 20px 12px; display:flex; flex-direction:column; gap:16px; }
+  .group { display:flex; flex-direction:column; gap:10px; }
+  .group + .group, .skillbox { border-top:1px solid var(--line); padding-top:16px; }
+  h2 { margin:0; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .row.res { grid-template-columns:1.3fr 1fr; }
+  .field { display:flex; flex-direction:column; gap:6px; color:var(--dim); font-size:12px; min-width:0; }
+  .field.slider { display:grid; grid-template-columns:1fr auto; gap:4px 8px; }
+  .field.slider input { grid-column:1 / -1; }
+  .field b { color:var(--fg); font-weight:500; }
+  select, input[type=text], input[type=number] { width:100%; min-width:0; height:34px; background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:var(--r); padding:0 10px; font:inherit; transition:border-color .12s; }
+  select { appearance:none; -webkit-appearance:none; padding-right:28px; cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%238c939b' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 10px center; }
+  select:hover, input[type=text]:hover, input[type=number]:hover { border-color:var(--line-strong); }
+  input::placeholder { color:var(--faint); }
+  input[type=range] { width:100%; height:18px; margin:0; background:transparent; appearance:none; -webkit-appearance:none; cursor:pointer; }
+  input[type=range]::-webkit-slider-runnable-track { height:4px; border-radius:2px; background:var(--line-strong); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; margin-top:-5px; border-radius:50%; background:var(--fg); border:0; box-shadow:0 0 0 3px var(--panel); transition:transform .1s; }
+  input[type=range]:active::-webkit-slider-thumb { transform:scale(1.15); }
+  input[type=range]::-moz-range-track { height:4px; border-radius:2px; background:var(--line-strong); }
+  input[type=range]::-moz-range-thumb { width:14px; height:14px; border-radius:50%; background:var(--fg); border:0; }
+  .dim { opacity:.5; }
+  .check { flex-direction:row; align-items:center; gap:8px; color:var(--fg); height:34px; align-self:end; cursor:pointer; }
+  .check input { accent-color:var(--accent); margin:0; }
+  .hint { color:var(--dim); font-size:12px; }
+  .hint.warn { color:var(--warn); }
+  .hint:empty { display:none; }
+
+  details.adv summary { cursor:pointer; color:var(--dim); font-size:12px; list-style:none; display:flex; align-items:center; gap:6px; width:max-content; border-radius:4px; }
+  details.adv summary::-webkit-details-marker { display:none; }
+  details.adv summary::before { content:"›"; display:inline-block; transition:transform .12s; }
+  details.adv[open] summary::before { transform:rotate(90deg); }
+  details.adv summary:hover { color:var(--fg); }
+  details.adv .field { margin-top:10px; }
+
+  .skillbox { display:flex; flex-direction:column; gap:6px; }
+  .skillrow { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .skillrow .name { display:block; color:var(--fg); font-size:12px; }
+  #skillState { font-size:12px; color:var(--dim); }
+  #skillState.ok { color:var(--ok); }
+  #skillState.warn { color:var(--warn); }
+  details.where summary { cursor:pointer; color:var(--faint); font-size:11px; width:max-content; }
+  details.where summary:hover { color:var(--dim); }
+  #skillWhere { margin:6px 0 0; color:var(--dim); font:11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+
+  button { font:inherit; font-weight:500; border:1px solid transparent; border-radius:var(--r); cursor:pointer; transition:background .12s, border-color .12s, color .12s, transform .08s; }
+  button:active:not(:disabled) { transform:scale(.98); }
   button:disabled { opacity:.45; cursor:default; }
-  .check { flex-direction:row; align-items:center; gap:8px; color:var(--fg); }
-  #note { color:var(--dim); font-size:12px; min-height:2.6em; }
-  #saved { color:var(--ok); font-size:12px; }
-  .hidden { display:none !important; }
+  .primary { height:40px; width:100%; background:var(--accent); color:var(--on-accent); font-weight:600; font-size:14px; }
+  .primary:hover:not(:disabled) { background:var(--accent-hi); }
+  .quiet { height:28px; padding:0 10px; background:transparent; color:var(--fg); border-color:var(--line-strong); font-size:12px; white-space:nowrap; }
+  .quiet:hover:not(:disabled) { background:var(--raised); }
+  .ghost { height:32px; width:100%; background:transparent; color:var(--dim); font-size:12px; }
+  .ghost:hover:not(:disabled) { color:var(--fg); background:var(--raised); }
+
+  .foot { border-top:1px solid var(--line); padding:14px 20px 12px; display:flex; flex-direction:column; gap:10px; background:var(--panel); }
+  .namebox { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:10px; color:var(--dim); font-size:12px; }
+  #status { display:flex; flex-direction:column; gap:2px; font-size:12px; }
+  #status:empty { display:none; }
+  #note { color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; }
+  #note.warn { color:var(--warn); }
+  #note.bad { color:var(--bad); }
+  #note:empty, #saved:empty, #savedPath:empty { display:none; }
+  #saved { color:var(--ok); font-weight:500; }
+  #saved::before { content:"✓ "; }
+  #savedPath { color:var(--faint); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  #bye { display:none; min-height:100vh; align-items:center; justify-content:center; flex-direction:column; gap:6px; text-align:center; }
+  #bye.show { display:flex; }
+  #bye strong { font-size:15px; font-weight:600; }
+  #bye span { color:var(--dim); }
+
+  @media (max-width: 900px) {
+    #app { display:block; height:auto; }
+    main { padding:16px 16px 12px; }
+    #stage { flex:none; height:min(62vw, 60vh); }
+    aside { border-left:0; border-top:1px solid var(--line); }
+    .scroll { overflow:visible; padding-bottom:16px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation-duration:2s !important; } }
 </style>
 </head>
 <body>
+<div id="app">
 <main>
-  <h1>Agent Eye <span id="modeLabel"></span></h1>
+  <header><h1>Agent Eye</h1><span id="modeLabel"></span></header>
   <div id="stage">
-    <div id="frame"><img id="view" alt=""><div id="grid"></div><div id="cross"></div></div>
-    <div id="msg">Loading cameras…</div>
+    <div id="frame"><img id="view" alt="Camera preview"><div id="grid"></div><div id="cross"></div></div>
+    <div id="msg" class="busy">Loading cameras…</div>
+    <div id="chips"><span id="fpsStat"></span><span id="cropStat"></span></div>
   </div>
-  <div id="stats"><span id="fpsStat"></span><span id="cropStat"></span><span id="outStat"></span></div>
+  <div class="caption"><span id="outStat"></span><span class="tip">Click the preview to re-center · scroll to zoom</span></div>
 </main>
 <aside>
-  <label>Camera <select id="camera"></select></label>
-  <div class="row">
-    <label>Resolution <select id="size"></select></label>
-    <label>Frame rate <select id="fps"></select></label>
+  <div class="scroll">
+    <section class="group">
+      <h2>Camera</h2>
+      <label class="field">Source <select id="camera"></select></label>
+      <div id="camNote" class="hint warn"></div>
+      <div class="row res">
+        <label class="field">Resolution <select id="size"></select></label>
+        <label class="field">Frame rate <select id="fps"></select></label>
+      </div>
+      <div id="slowNote" class="hint hidden"></div>
+    </section>
+    <section class="group">
+      <h2>Framing</h2>
+      <label id="zoomRow" class="field slider">Camera zoom <b id="zoomV">1.0×</b><input id="zoom" type="range" min="1" max="10" step="0.1" value="1"></label>
+      <label class="field slider">Digital zoom <b id="dzV">1.0×</b><input id="dz" type="range" min="1" max="8" step="0.05" value="1"></label>
+      <div id="centerRow" class="row">
+        <label class="field slider">Center X <b id="cxV">50%</b><input id="cx" type="range" min="0" max="1" step="0.005" value="0.5"></label>
+        <label class="field slider">Center Y <b id="cyV">50%</b><input id="cy" type="range" min="0" max="1" step="0.005" value="0.5"></label>
+      </div>
+      <div class="row">
+        <label class="field">Rotate <select id="rotate"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
+        <label class="field check"><input id="showGrid" type="checkbox"> Grid and center mark</label>
+      </div>
+    </section>
+    <details class="adv" id="advanced">
+      <summary>Advanced</summary>
+      <label class="field">Bitrate (Mbit/s, blank = automatic) <input id="bitrate" type="number" min="1" max="200" step="1" placeholder="auto"></label>
+    </details>
+    <section class="skillbox">
+      <div class="skillrow">
+        <div><span class="name">Agent skill</span><span id="skillState">Checking…</span></div>
+        <button id="skill" class="quiet" disabled>Add skill to project</button>
+      </div>
+      <details class="where"><summary>Locations</summary><pre id="skillWhere"></pre></details>
+    </section>
   </div>
-  <div id="slowNote" class="hidden" style="color:var(--dim);font-size:12px"></div>
-  <fieldset>
-    <legend>Framing</legend>
-    <label id="zoomRow">Camera zoom (lossless) <b id="zoomV">1.0×</b><input id="zoom" type="range" min="1" max="10" step="0.1" value="1"></label>
-    <label>Digital zoom (crop) <b id="dzV">1.0×</b><input id="dz" type="range" min="1" max="8" step="0.05" value="1"></label>
-    <div class="row">
-      <label>Center X <b id="cxV">50%</b><input id="cx" type="range" min="0" max="1" step="0.005" value="0.5"></label>
-      <label>Center Y <b id="cyV">50%</b><input id="cy" type="range" min="0" max="1" step="0.005" value="0.5"></label>
-    </div>
-    <label>Rotate <select id="rotate"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
-    <label class="check"><input id="showGrid" type="checkbox"> Thirds grid and center mark</label>
-  </fieldset>
-  <label>Bitrate (Mbit/s, blank = automatic) <input id="bitrate" type="number" min="1" max="200" step="1" placeholder="auto"></label>
-  <label>Profile name <input id="name" type="text" value="default"></label>
-  <div id="note"></div>
-  <button id="save">Confirm and save</button>
-  <div id="saved"></div>
-  <fieldset>
-    <legend>Agent skill</legend>
-    <div id="skillState" style="font-size:12px;color:var(--dim)">Checking…</div>
-    <button id="skill" class="secondary" disabled>Add skill to project</button>
-  </fieldset>
-  <button id="done" class="secondary">Close and release the camera</button>
+  <div class="foot">
+    <label class="namebox">Profile <input id="name" type="text" value="default" autocomplete="off" spellcheck="false"></label>
+    <div id="status" role="status" aria-live="polite"><div id="note"></div><div id="saved"></div><div id="savedPath"></div></div>
+    <button id="save" class="primary">Confirm and save</button>
+    <button id="done" class="ghost">Close and release the camera</button>
+  </div>
 </aside>
+</div>
+<div id="bye"><strong>Camera released</strong><span>You can close this tab.</span></div>
 <script>
 const TOKEN = '__TOKEN__';
 const $ = (id) => document.getElementById(id);
 const api = async (path, body) => {
   const r = await fetch(path, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-agent-eye-token': TOKEN, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json();
-  if (!r.ok) throw new Error(j.error + (j.hint ? `\n${j.hint}` : ''));
+  if (!r.ok) throw Object.assign(new Error(j.error + (j.hint ? `\n${j.hint}` : '')), { status: r.status });
   return j;
 };
 const SIZES_MAC = ['1920x1080', '1280x720', '640x480'];
@@ -93,10 +205,12 @@ let devices = [], state = null, macModes = {}, restartTimer = null, previewId = 
 let keptCrop = null;
 // Set when the server no longer runs this page's preview (another tab took the camera, or nobody watched).
 // The page then waits for the person instead of reopening the camera on its own, so two tabs cannot fight.
-let released = false;
+let released = false, failed = false;
 
 const device = () => devices.find((d) => d.id === $('camera').value);
-const showMsg = (t, err = false) => { $('msg').textContent = t; $('msg').className = err ? 'err' : ''; $('msg').classList.toggle('hidden', !t); };
+// extra: 'busy' shows a spinner, 'act' makes the message a button; `err` colours it as an error.
+const showMsg = (t, err = false, extra = '') => { $('msg').textContent = t; $('msg').className = [err ? 'err' : '', extra].filter(Boolean).join(' '); $('msg').classList.toggle('hidden', !t); };
+const setNote = (t, kind = '') => { $('note').textContent = t; $('note').className = kind; };
 
 /** Frame rates offered for a size; `saved` (the profile's own rate) is added when the camera supports it. */
 function fpsOptionsFor(dev, size, saved) {
@@ -122,7 +236,7 @@ function fillSelect(sel, values, keep, labeler = String) {
   for (const v of values) { const o = document.createElement('option'); o.value = v; o.textContent = labeler(v); sel.appendChild(o); }
   if (keep !== undefined && values.map(String).includes(String(keep))) sel.value = String(keep);
 }
-const prettySize = (s) => ({ '3840x2160': '3840x2160 (4K)', '1920x1080': '1920x1080 (Full HD)', '1280x720': '1280x720 (HD)' }[s] ?? s);
+const prettySize = (s) => ({ '3840x2160': '3840x2160 (4K)', '1920x1080': '1920x1080 (FHD)', '1280x720': '1280x720 (HD)' }[s] ?? s);
 
 function controlsCrop() {
   const dz = +$('dz').value, w = 1 / dz;
@@ -148,12 +262,14 @@ function applyView() {
   $('zoomV').textContent = (+$('zoom').value).toFixed(1) + '×';
   $('dzV').textContent = c.w === c.h ? (1 / c.w).toFixed(2) + '×' : 'saved crop';
   $('cxV').textContent = Math.round((c.x + c.w / 2) * 100) + '%'; $('cyV').textContent = Math.round((c.y + c.h / 2) * 100) + '%';
+  $('centerRow').classList.toggle('dim', isFull(c)); // the center only matters once the picture is cropped
   $('grid').style.display = $('cross').style.display = $('showGrid').checked ? 'block' : 'none';
   const p = currentProfile();
   const copy = p.source.startsWith('android:') && isFull(c) && p.rotate === 0;
   const turned = p.rotate % 180 !== 0, fw = turned ? p.height : p.width, fh = turned ? p.width : p.height; // the crop is on the rotated picture
   $('cropStat').textContent = !isFull(c) ? `crop ${Math.round(p.crop.w * fw)}×${Math.round(p.crop.h * fh)} px` : 'full frame';
-  $('outStat').textContent = copy ? 'records the phone stream as is (no re-encode)' : 'records with a re-encode (crop, rotate or Mac camera)';
+  $('outStat').textContent = copy ? 'Records the phone stream as is (no re-encode).' : 'Records with a re-encode (crop, rotate or Mac camera).';
+  $('saved').textContent = ''; $('savedPath').textContent = ''; // a confirmation only describes the settings it saved
 }
 
 /** Size the visible box like the recorded picture: the rotated frame, cut to the crop's proportions. */
@@ -169,13 +285,13 @@ async function restartPreview() {
   clearTimeout(restartTimer);
   const dev = device(); if (!dev) return;
   const mine = ++previewAt;
-  previewId = null; released = false;
-  showMsg('Starting camera…'); $('view').removeAttribute('src');
+  previewId = null; released = false; failed = false;
+  showMsg('Starting camera…', false, 'busy'); $('view').removeAttribute('src'); $('fpsStat').textContent = '';
   try {
     const { id } = await api('/api/preview/start', { profile: currentProfile() });
     if (mine !== previewAt) return;
     previewId = id; $('view').src = `/stream?id=${id}&t=${TOKEN}&r=${Date.now()}`;
-  } catch (e) { if (mine === previewAt) showMsg(e.message, true); }
+  } catch (e) { if (mine === previewAt) { failed = true; showMsg(e.message + '\nClick here to try again.', true, 'act'); } }
 }
 const scheduleRestart = () => { clearTimeout(restartTimer); restartTimer = setTimeout(restartPreview, 450); };
 $('view').addEventListener('load', () => showMsg(''));
@@ -183,7 +299,7 @@ $('view').addEventListener('load', () => showMsg(''));
 async function onCameraChange(keep = {}) {
   const dev = device();
   if (dev?.kind === 'mac' && !macModes[dev.id]) {
-    showMsg('Asking the camera which modes it supports…');
+    showMsg('Asking the camera which modes it supports…', false, 'busy');
     try { macModes[dev.id] = (await api('/api/mac-modes', { source: dev.id })).modes; } catch (e) { macModes[dev.id] = []; }
   }
   const sizes = sizesFor(dev);
@@ -194,7 +310,7 @@ async function onCameraChange(keep = {}) {
 }
 function onSizeChange(keep = {}) {
   const dev = device(), size = $('size').value, opts = fpsOptionsFor(dev, size, keep.fps);
-  fillSelect($('fps'), opts, keep.fps ?? (opts.includes(30) ? 30 : opts[0]), (f) => f + ' fps' + (f > 60 ? ' (slow motion)' : ''));
+  fillSelect($('fps'), opts, keep.fps ?? (opts.includes(30) ? 30 : opts[0]), (f) => f + ' fps' + (f > 60 ? ' (slow)' : ''));
   const zr = dev?.kind === 'android' ? dev.caps.zoomRange : [1, 1];
   $('zoomRow').classList.toggle('hidden', dev?.kind !== 'android');
   $('zoom').min = zr[0]; $('zoom').max = zr[1]; if (keep.zoom) $('zoom').value = keep.zoom; else if (+$('zoom').value > zr[1]) $('zoom').value = 1;
@@ -205,15 +321,15 @@ function onFpsChange() {
   const el = $('slowNote');
   el.classList.toggle('hidden', !(f > 60));
   el.textContent = 'Slow motion: the preview stays at 15 fps; the recording uses the full rate. Bitrate defaults to 40 Mbit/s.';
-  $('note').textContent = '';
+  setNote('');
 }
 
 async function load() {
   state = await api('/api/state');
-  $('modeLabel').textContent = '· ' + (state.mode === 'preview' ? 'preview' : 'configure');
+  $('modeLabel').textContent = state.mode === 'preview' ? 'preview' : 'configure';
   const res = await api('/api/devices', {});
   devices = res.devices;
-  if (!devices.length) { showMsg('No cameras found.\n' + res.problems.map((p) => `${p.model}: ${p.hint}`).join('\n'), true); return; }
+  if (!devices.length) { $('save').disabled = true; showMsg('No cameras found.\n' + res.problems.map((p) => `${p.model}: ${p.hint}`).join('\n'), true); return; }
   fillSelect($('camera'), devices.map((d) => d.id), state.profile?.source, (id) => devices.find((d) => d.id === id).name);
   if (!devices.some((d) => d.id === state.profile?.source)) {
     const pref = devices.find((d) => d.kind === 'android' && d.name.includes('back')) ?? devices[0];
@@ -222,12 +338,13 @@ async function load() {
   const p = state.profile;
   if (p) {
     $('name').value = state.profileName; $('rotate').value = p.rotate ?? 0; $('bitrate').value = p.bitrate ?? '';
+    $('advanced').open = p.bitrate != null; // a saved bitrate is a decision: show it
     if (p.crop && !isFull(p.crop)) keptCrop = { ...p.crop };
     const dz = p.crop ? 1 / p.crop.w : 1; $('dz').value = dz;
     $('cx').value = p.crop ? p.crop.x + p.crop.w / 2 : 0.5; $('cy').value = p.crop ? p.crop.y + p.crop.h / 2 : 0.5;
   }
   await onCameraChange(p && p.source === $('camera').value ? { size: `${p.width}x${p.height}`, fps: p.fps, zoom: p.zoom } : {});
-  if (res.problems.length) $('note').textContent = res.problems.map((q) => `${q.model}: ${q.hint}`).join('\n');
+  $('camNote').textContent = res.problems.map((q) => `${q.model}: ${q.hint}`).join('\n');
 }
 
 $('camera').onchange = () => onCameraChange();
@@ -247,29 +364,36 @@ $('view').addEventListener('click', (e) => {
 addEventListener('resize', fitFrame);
 
 $('save').onclick = async () => {
-  $('save').disabled = true; $('saved').textContent = '';
+  $('save').disabled = true; $('save').textContent = 'Saving…'; setNote(''); $('saved').textContent = ''; $('savedPath').textContent = '';
   try {
     const r = await api('/api/save', { name: $('name').value.trim(), profile: currentProfile(), makeDefault: true });
-    $('saved').textContent = `Saved "${r.name}" to ${r.configPath}`;
-  } catch (e) { $('note').textContent = e.message; $('note').style.color = 'var(--bad)'; setTimeout(() => { $('note').style.color = ''; }, 6000); }
-  $('save').disabled = false;
+    $('saved').textContent = `Saved "${r.name}" as the default profile`; $('savedPath').textContent = '…/' + r.configPath.split(/[\\/]/).slice(-3).join('/'); $('savedPath').title = r.configPath;
+  } catch (e) { setNote(e.message, e.status === 409 ? 'warn' : 'bad'); } // 409: the preview is still restarting, just confirm again
+  $('save').disabled = false; $('save').textContent = 'Confirm and save';
 };
+$('name').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('save').disabled) $('save').onclick(); });
+
 function showSkill(st) {
-  const where = st.targets.map((t) => `${t.relative}: ${t.state}`).join('\n');
-  $('skillState').style.whiteSpace = 'pre-line';
   const outdated = st.targets.some((t) => t.state === 'outdated');
-  const head = st.upToDate ? '✓ Installed and up to date in ' : outdated ? 'Outdated in ' : st.installed ? 'Missing in part of ' : 'Not installed in ';
-  $('skillState').textContent = head + st.projectRoot + '\n' + where;
+  $('skillState').textContent = st.upToDate ? '✓ Up to date' : outdated ? 'Outdated' : st.installed ? 'Partly installed' : 'Not installed';
+  $('skillState').className = st.upToDate ? 'ok' : outdated || st.installed ? 'warn' : '';
+  $('skillWhere').textContent = st.projectRoot + '\n' + st.targets.map((t) => `${t.relative}: ${t.state}`).join('\n');
   $('skill').textContent = st.upToDate ? 'Skill installed' : st.installed ? 'Update skill' : 'Add skill to project';
   $('skill').disabled = st.upToDate;
 }
 $('skill').onclick = async () => {
   $('skill').disabled = true;
-  try { showSkill(await api('/api/skill/install', {})); } catch (e) { $('skillState').textContent = e.message; $('skill').disabled = false; }
+  try { showSkill(await api('/api/skill/install', {})); } catch (e) { $('skillState').textContent = e.message; $('skillState').className = 'warn'; $('skill').disabled = false; }
 };
 api('/api/skill').then(showSkill).catch((e) => { $('skillState').textContent = e.message; });
 
-$('done').onclick = async () => { previewId = null; await api('/api/preview/stop', {}); await api('/api/done', {}); document.body.innerHTML = '<p style="padding:24px">You can close this tab.</p>'; };
+$('done').onclick = async () => {
+  previewId = null; $('done').disabled = true; $('done').textContent = 'Releasing…';
+  try {
+    await api('/api/preview/stop', {}); await api('/api/done', {});
+    $('app').classList.add('hidden'); $('bye').classList.add('show');
+  } catch (e) { setNote(e.message, 'bad'); $('done').disabled = false; $('done').textContent = 'Close and release the camera'; }
+};
 
 setInterval(async () => {
   const mine = previewId;
@@ -278,13 +402,13 @@ setInterval(async () => {
     const s = await api('/api/preview/stats');
     if (previewId !== mine) return; // a restart or Close happened meanwhile
     if (s.id !== mine) {
-      previewId = null; released = true; $('view').removeAttribute('src');
-      return showMsg('The camera was released: another tab took it, or no tab was watching.\nClick here to show the preview again.');
+      previewId = null; released = true; $('view').removeAttribute('src'); $('fpsStat').textContent = '';
+      return showMsg('The camera was released: another tab took it, or no tab was watching.\nClick here to show the preview again.', false, 'act');
     }
-    $('fpsStat').textContent = s.frames ? `preview ${s.fps.toFixed(1)} fps` : '';
+    $('fpsStat').textContent = s.frames ? `Live · ${s.fps.toFixed(1)} fps` : '';
   } catch {}
 }, 1000);
-$('msg').addEventListener('click', () => { if (released) restartPreview(); });
+$('msg').addEventListener('click', () => { if (released || failed) restartPreview(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && released) restartPreview(); });
 load().catch((e) => showMsg(e.message, true));
 </script>
