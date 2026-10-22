@@ -20,6 +20,12 @@ Android recordings are the phone's H.264 stream copied as-is (no re-encode) unle
 rotate. Every recording gets a `.json` next to it with the **measured** fps, frame count and the
 host clock at start and stop, so you can line the video up with logs.
 
+Each frame of an Android recording carries the time the phone **captured** it (scrcpy's packet
+timestamp, passed to ffmpeg as MPEG-TS), not the time it reached the Mac: at 60 fps the frames are
+16.67 ms apart and a dropped frame shows up as a 33 ms gap. `frameIntervalMs` in the summary gives
+the median, shortest and longest interval and how many are off by more than half the median; more
+than 1 % adds a warning.
+
 A recording only counts when ffmpeg finished the file and `ffprobe` can read frames from it.
 Otherwise `record` / `stop` exit with code 3 ("Recording failed"), the incomplete file is left
 where it was and no `.json` is written; a `.json` left by an earlier take of the same file is
@@ -55,7 +61,7 @@ agent-eye show                   print the saved profile
 agent-eye snapshot --out a.jpg   full-resolution still with the saved framing (lets an agent look)
 agent-eye record --out v.mp4 --duration 30   --duration is seconds (> 0); without it, until Ctrl-C
 agent-eye start --out v.mp4      record in the background (one at a time per project)
-agent-eye stop                   stop it and print the summary, or the reason it failed
+agent-eye stop [--tail S]        stop it (after S more seconds) and print the summary, or the reason it failed
 agent-eye status
 agent-eye skill [--install]      is the agent skill in this project? --install adds or updates it
 ```
@@ -131,6 +137,15 @@ cancels it (exit 1, nothing recorded). The worker's log is `.agent-eye/worker.lo
 - Phone zoom changes restart the preview (about a second); digital zoom is instant.
 - High frame rates depend on the phone's encoder. Check `measuredFps` in the summary; a warning
   is added when it falls under 90 % of what you asked for.
+- Exposure and white balance on the phone are automatic and cannot be locked: scrcpy 4.1, which
+  runs the phone camera, has no option for AE/AWB lock or manual exposure and ISO, even on phones
+  that support them. A large change in what the camera sees (a screen flashing black) shifts the
+  brightness of the whole frame for 1-2 s. To measure brightness, normalise against a fixed
+  region outside the subject. Agent Eye's crop is applied on the Mac and does not change what
+  the camera meters.
+- Frames reach the Mac a moment after they are captured, so `stop` misses the last instant before
+  it runs. When the last event matters, use `stop --tail 1` (or start the sequence after
+  `start` returns and leave a second at the end).
 
 ## Development
 

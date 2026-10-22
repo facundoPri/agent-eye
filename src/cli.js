@@ -26,7 +26,7 @@ const HELP = `agent-eye: eyes for agents. Configure, preview and record cameras.
   agent-eye snapshot --out f.jpg       one full-resolution still with the saved framing
   agent-eye record --out v.mp4 --duration 30
   agent-eye start --out v.mp4          record in the background
-  agent-eye stop                       stop the background recording and print its summary
+  agent-eye stop [--tail S]            stop the background recording (S more seconds first) and print its summary
   agent-eye status                     is a background recording running?
   agent-eye skill [--install]          is the agent skill in this project? --install adds or updates it
 
@@ -262,6 +262,14 @@ async function cmdWorker(flags) {
 
 async function cmdStop(flags) {
   const { path } = requireConfig(flags);
+  const tailSec = numFlag(flags, 'tail', (v) => v >= 0 && v <= 600, 'a number of seconds between 0 and 600') ?? 0;
+  // Frames reach the Mac a little after they are captured, so the last moments before `stop` are never in the file.
+  // --tail keeps recording that much longer; Ctrl-C during the wait stops right away.
+  if (tailSec && (await recorderStatus(statePath(path))).running) {
+    const abort = new AbortController();
+    abortOnSignals(abort);
+    await new Promise((r) => { const t = setTimeout(r, tailSec * 1000); abort.signal.addEventListener('abort', () => { clearTimeout(t); r(); }); });
+  }
   const res = await stopRecorder(statePath(path));
   if (!res) throw new UserError('The background recorder ended without reporting a result; no valid video is known.', { code: 1, hint: `See ${join(dirname(path), 'worker.log')}.` });
   if (!res.ok) throw resultError(res);

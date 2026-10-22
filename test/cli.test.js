@@ -177,3 +177,15 @@ test('a `start` that cannot launch its worker releases its claim', { timeout: 20
   assert.equal(existsSync(stateFile(root)), false);
   assert.equal((await cli(root, ['status'])).json.running, false);
 });
+
+test('`stop --tail` keeps recording that much longer; a bad --tail is refused', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  assert.equal((await cli(root, ['start', '--out', join(root, 't.mp4')])).code, 0);
+  const bad = await cli(root, ['stop', '--tail', 'soon']);
+  assert.equal(bad.code, 2);
+  assert.match(bad.json.error, /--tail/);
+  const stop = await cli(root, ['stop', '--tail', '1.5']);
+  assert.equal(stop.code, 0, stop.stdout);
+  assert.ok(stop.ms >= 1500, `stopped after ${stop.ms} ms`);
+  assert.ok(stop.json.stoppedAtMs - stop.json.startedAtMs >= 1500);
+});
