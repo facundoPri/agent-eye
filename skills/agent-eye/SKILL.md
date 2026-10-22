@@ -11,7 +11,9 @@ Commands and flags: `agent-eye help`. Run as `agent-eye` if it is on PATH, other
 1. **Look.** `agent-eye snapshot --out <dir>/look.jpg`, then open the image. Done when you
    have seen that the subject is in frame and in focus. If it is not, ask the human to run
    `agent-eye preview` and confirm a new framing; change the profile yourself with
-   `agent-eye configure --set` only when asked to.
+   `agent-eye configure --set` only when asked to. For another setting (say 240 fps), add a
+   profile with `configure --set <json> --name <new>` and record with `--profile <new>`:
+   that leaves the human's profile and the default as they were.
 2. **Record.** Fixed length: `agent-eye record --out <file>.mp4 --duration <s>`. Around other
    actions (flashing, a test sequence): `agent-eye start --out <file>.mp4`, do the work,
    `agent-eye stop --tail 1` (the extra second keeps the last event in the file). Done when the
