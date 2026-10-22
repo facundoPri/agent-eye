@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -188,4 +188,63 @@ test('`stop --tail` keeps recording that much longer; a bad --tail is refused', 
   assert.equal(stop.code, 0, stop.stdout);
   assert.ok(stop.ms >= 1500, `stopped after ${stop.ms} ms`);
   assert.ok(stop.json.stoppedAtMs - stop.json.startedAtMs >= 1500);
+});
+
+const readConfig = (root) => JSON.parse(readFileSync(join(root, '.agent-eye', 'config.json'), 'utf8'));
+const hs = JSON.stringify({ source: 'android:FAKE1/0', width: 1280, height: 720, fps: 15 });
+
+test('`configure --set --profile X` creates X and leaves the default profile and selection alone', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  const before = readConfig(root);
+  for (const flag of ['--profile', '--name']) {
+    const name = `hs${flag.slice(2)}`;
+    const r = await cli(root, ['configure', flag, name, '--set', hs]);
+    assert.equal(r.code, 0, r.stdout);
+    assert.equal(r.json.created, true);
+    const cfg = readConfig(root);
+    assert.equal(cfg.profiles[name].fps, 15);
+    assert.deepEqual(cfg.profiles.default, before.profiles.default, 'the human-confirmed profile is untouched');
+    assert.equal(cfg.default, 'default', 'the default selection is untouched');
+  }
+});
+
+test('`configure --set` without a name updates the current default; --default switches it', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  assert.equal((await cli(root, ['configure', '--name', 'hs', '--set', hs, '--default'])).json.default, 'hs');
+  const r = await cli(root, ['configure', '--set', JSON.stringify({ source: 'android:FAKE1/0', width: 1920, height: 1080, fps: 60 })]);
+  assert.equal(r.json.name, 'hs');
+  const cfg = readConfig(root);
+  assert.equal(cfg.profiles.hs.fps, 60);
+  assert.equal(cfg.profiles.default.fps, 30, 'the profile that is no longer the default is not touched');
+});
+
+test('`configure --set` refuses --name and --profile that disagree', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  const r = await cli(root, ['configure', '--name', 'a', '--profile', 'b', '--set', hs]);
+  assert.equal(r.code, 2);
+  assert.match(r.json.error, /different profiles/);
+  assert.deepEqual(Object.keys(readConfig(root).profiles), ['default']);
+});
+
+test('`configure --set` input mistakes are refused before the config is touched', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  const before = readFileSync(join(root, '.agent-eye', 'config.json'), 'utf8');
+  for (const [args, why] of [
+    [['--name', 'x', '--default=false', '--set', hs], /--default takes no value/],
+    [['--set', JSON.stringify({ ...JSON.parse(hs), name: 5 })], /"name" .* must be a string/],
+    [['--name', '--set', hs], /--name needs a value/],
+  ]) {
+    const r = await cli(root, ['configure', ...args]);
+    assert.equal(r.code, 2, `${args.join(' ')}: ${r.stdout}`);
+    assert.match(r.json.error, why);
+  }
+  assert.equal(readFileSync(join(root, '.agent-eye', 'config.json'), 'utf8'), before);
+});
+
+test('`configure --set` on an empty project makes the first profile the default', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  rmSync(join(root, '.agent-eye', 'config.json'));
+  const r = await cli(root, ['configure', '--name', 'first', '--set', hs]);
+  assert.equal(r.code, 0, r.stdout);
+  assert.equal(readConfig(root).default, 'first');
 });

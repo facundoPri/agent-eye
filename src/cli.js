@@ -21,6 +21,9 @@ const HELP = `agent-eye: eyes for agents. Configure, preview and record cameras.
   agent-eye devices [--caps]           list cameras (Mac webcams, Android phones over USB)
   agent-eye configure                  open the browser to pick camera, resolution, fps, zoom, framing
   agent-eye configure --set JSON       same without a browser; JSON, @file.json or - for stdin
+      [--name N] [--default]           writes only profile N, creating it if new (--profile N, or "name" in
+                                       the JSON, is the same); without a name, the default profile.
+                                       --default makes N the default
   agent-eye preview                    open the browser on the saved profile to check or adjust it
   agent-eye show                       print the saved profile
   agent-eye snapshot --out f.jpg       one full-resolution still with the saved framing
@@ -35,7 +38,7 @@ While a browser page (setup, configure, preview) is open it holds the camera; cl
 Output is JSON when stdout is not a terminal (or with --json). Exit codes: 0 ok, 1 error,
 2 not configured or bad input, 3 camera or tool problem.`;
 
-const BOOL = new Set(['json', 'text', 'caps', 'global', 'no-open', 'help', 'install']);
+const BOOL = new Set(['json', 'text', 'caps', 'global', 'no-open', 'help', 'install', 'default']);
 
 export function parseArgs(argv) {
   const flags = {}, rest = [];
@@ -46,7 +49,11 @@ export function parseArgs(argv) {
     const [k, v] = a.slice(2).split(/=(.*)/s, 2);
     if (v !== undefined) flags[k] = v;
     else if (BOOL.has(k)) flags[k] = true;
-    else { flags[k] = argv[++i]; if (flags[k] === undefined) throw new UserError(`--${k} needs a value`, { code: 2 }); }
+    else {
+      flags[k] = argv[++i];
+      // `--name --set {…}` must not take "--set" as the name and drop the JSON.
+      if (flags[k] === undefined || flags[k].startsWith('--')) throw new UserError(`--${k} needs a value`, { code: 2 });
+    }
   }
   return { cmd: rest[0], flags, rest: rest.slice(1) };
 }
@@ -104,17 +111,30 @@ async function readSetInput(value) {
 async function cmdConfigureJson(flags) {
   let raw;
   try { raw = JSON.parse(await readSetInput(flags.set)); } catch (e) { throw new UserError(`--set is not valid JSON: ${e.message}`, { code: 2 }); }
-  const name = flags.name ?? raw.name ?? 'default';
+  if (flags.name && flags.profile && flags.name !== flags.profile) {
+    throw new UserError(`--name "${flags.name}" and --profile "${flags.profile}" name different profiles; pass one.`, { code: 2 });
+  }
+  if (flags.default !== undefined && flags.default !== true && flags.default !== 'true') {
+    throw new UserError(`--default takes no value (got "${flags.default}"); leave it out to keep the current default.`, { code: 2 });
+  }
+  if (raw.name !== undefined && raw.name !== null && typeof raw.name !== 'string') throw new UserError('"name" in --set JSON must be a string.', { code: 2 });
   const { name: _n, confirmedAt: _c, ...body } = raw;
   const profile = normalizeProfile(body);
   const { devices } = await listDevices({ capabilities: true });
   const dev = devices.find((d) => d.id === profile.source);
   if (!dev) throw new UserError(`Camera ${profile.source} is not connected.`, { code: 3, hint: `Connected: ${devices.map((d) => d.id).join(', ') || 'none'}` });
   assertSupported(profile, dev, dev.kind === 'mac' ? await macCameraModes(dev.index) : []);
+  // Read just before writing: a save from the browser during device discovery must not be lost.
   const path = configPathForWrite({ global: !!flags.global });
-  const cfg = upsertProfile(loadConfig(path) ?? emptyConfig(), name, profile, { makeDefault: true });
+  const current = loadConfig(path) ?? emptyConfig();
+  // Only the named profile is written (created if new); without a name, the current default.
+  // The default selection changes only with --default, or when there is no valid one.
+  const name = flags.name ?? flags.profile ?? raw.name ?? current.default ?? 'default';
+  const created = !Object.hasOwn(current.profiles ?? {}, name);
+  const cfg = upsertProfile(current, name, profile, { makeDefault: !!flags.default });
   saveConfig(path, cfg);
-  print(flags, { ok: true, name, configPath: path, profile: cfg.profiles[name] }, `Saved profile "${name}" to ${path}`);
+  print(flags, { ok: true, name, created, default: cfg.default, configPath: path, profile: cfg.profiles[name] },
+    `${created ? 'Created' : 'Updated'} profile "${name}" in ${path}; the default profile is "${cfg.default}".`);
 }
 
 async function cmdWeb(flags, mode) {

@@ -66,7 +66,7 @@ agent-eye status
 agent-eye skill [--install]      is the agent skill in this project? --install adds or updates it
 ```
 
-Options: `--profile NAME`, `--name NAME` (with `--set`), `--global`, `--no-open`, `--port N`,
+Options: `--profile NAME`, `--name NAME` and `--default` (with `--set`), `--global`, `--no-open`, `--port N`,
 `--json` / `--text`. Output is JSON whenever stdout is not a terminal. Exit codes: 0 ok,
 1 error, 2 not configured or invalid input, 3 camera or tool problem.
 
@@ -113,6 +113,12 @@ the framing.
 - `crop`: digital zoom and pan, as fractions of the (rotated) frame. Forces a re-encode.
 - `rotate`: 0, 90, 180, 270. Applied before `crop`.
 - `bitrate`: Mbit/s. Default 20, or 40 above 60 fps.
+
+A config holds several named profiles and one default, used when a command has no `--profile`.
+`configure --set JSON --name hs240` (or `--profile hs240`, or `"name": "hs240"` in the JSON)
+writes only `hs240`, creating it if new; without a name it updates the default profile. The
+default changes only with `--default`, or when the config has no valid default (none yet, or
+one naming a profile that no longer exists).
 
 Confirming in the browser also saves a still of the approved framing to
 `.agent-eye/snapshots/<name>.jpg`.
