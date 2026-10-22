@@ -23,9 +23,14 @@ Commands and flags: `agent-eye help`. Run as `agent-eye` if it is on PATH, other
 
 - **2, not configured or invalid input**: framing needs a person at the browser. Ask the
   human to run `agent-eye setup`, then continue.
-- **3, camera busy**: one program at a time can hold a camera. A browser preview left open
-  (`agent-eye preview`, `configure` or `setup`) holds it until its Close button or Ctrl-C;
-  so does a scrcpy window or the phone's camera app. Ask the human to close it, then retry.
+- **3, camera busy**: one program at a time can hold a camera. A browser preview
+  (`agent-eye preview`, `configure` or `setup`) holds it until its Close button, Ctrl-C, or
+  about 10 s after its tab closes; so does a scrcpy window or the phone's camera app. Ask the
+  human to close it, then retry.
+- **3, "Recording failed"** from `record` or `stop`: the file is not a finished video. Report
+  the reason and record again; a recording exists only when the summary comes back.
+- **1, "already running"** from `start`: another background recording holds this project.
+  `agent-eye status` shows its file; stop it only if it is yours.
 - **3, phone missing or unauthorized**: the phone must be unlocked, on USB, with the
   "Allow USB debugging" prompt accepted. `agent-eye doctor` shows what is missing.
 

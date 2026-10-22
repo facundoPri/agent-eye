@@ -18,3 +18,11 @@ test('drops garbage before the first start marker', () => {
   s.push(Buffer.concat([Buffer.from([1, 2, 3]), jpeg(4)]));
   assert.deepEqual(frames, [8]);
 });
+
+test('a start marker split across chunks still yields the frame', () => {
+  const frames = [];
+  const s = new JpegSplitter((f) => frames.push(Buffer.from(f)));
+  s.push(Buffer.from([0xff]));
+  s.push(Buffer.from([0xd8, 1, 2, 0xff, 0xd9]));
+  assert.deepEqual(frames, [Buffer.from([0xff, 0xd8, 1, 2, 0xff, 0xd9])]);
+});

@@ -102,16 +102,16 @@ export function saveConfig(path, cfg) {
 
 /** Add or replace a confirmed profile. The first profile becomes the default. */
 export function upsertProfile(cfg, name, profile, { makeDefault = false, now = new Date() } = {}) {
-  if (!/^[\w.-]{1,40}$/.test(name)) throw new UserError('Profile name must be 1-40 chars of letters, digits, "_", "-" or ".".', { code: 2 });
+  if (!/^[\w.-]{1,40}$/.test(name) || name === '__proto__') throw new UserError('Profile name must be 1-40 chars of letters, digits, "_", "-" or "." (not "__proto__").', { code: 2 });
   const next = { ...cfg, profiles: { ...cfg.profiles } };
   next.profiles[name] = { ...normalizeProfile(profile), confirmedAt: now.toISOString() };
-  if (makeDefault || !next.default || !next.profiles[next.default]) next.default = name;
+  if (makeDefault || !next.default || !Object.hasOwn(next.profiles, next.default)) next.default = name;
   return next;
 }
 
 export function getProfile(cfg, name) {
   const key = name ?? cfg?.default;
-  const p = key && cfg?.profiles?.[key];
+  const p = key && cfg?.profiles && Object.hasOwn(cfg.profiles, key) ? cfg.profiles[key] : null;
   if (!p) {
     const known = Object.keys(cfg?.profiles ?? {});
     throw new UserError(

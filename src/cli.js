@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, writeFileSync, mkdirSync, openSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, existsSync, readFileSync, openSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,7 @@ import { doctor, macCameraAccess } from './doctor.js';
 import { recordToFile, takeSnapshot } from './capture.js';
 import { serveConfigurator } from './server.js';
 import { UserError, sleep } from './util.js';
+import { claim, listenControl, readState, recorderStatus, removeState, statePath, stopRecorder, updateState } from './background.js';
 import { installSkill, projectRootFor, skillStatus } from './skill.js';
 
 const HELP = `agent-eye: eyes for agents. Configure, preview and record cameras.
@@ -54,8 +56,35 @@ const print = (flags, obj, text) => console.log(jsonMode(flags) ? JSON.stringify
 
 function openBrowser(url) {
   const [cmd, args] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
-  try { spawn(cmd, args, { stdio: 'ignore', detached: true }).unref(); } catch { /* the URL is printed anyway */ }
+  // A missing opener (no xdg-open) fails asynchronously; the URL is printed anyway.
+  try { spawn(cmd, args, { stdio: 'ignore', detached: true }).on('error', () => {}).unref(); } catch { /* same */ }
 }
+
+/** A numeric flag, checked before any camera is opened. */
+function numFlag(flags, name, ok, what) {
+  const raw = flags[name];
+  if (raw === undefined) return undefined;
+  const v = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN;
+  if (!Number.isFinite(v) || !ok(v)) throw new UserError(`--${name} must be ${what} (got "${raw}").`, { code: 2 });
+  return v;
+}
+const durationFlag = (flags) => numFlag(flags, 'duration', (v) => v > 0 && v <= 2e6, 'a number of seconds greater than 0');
+
+/**
+ * Abort `abort` on Ctrl-C, kill or hang-up so the camera is released cleanly. A second signal
+ * quits at once, for a step that cannot be interrupted (a hung adb push).
+ */
+function abortOnSignals(abort) {
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => {
+      if (abort.signal.aborted) { console.error('Interrupted.'); process.exit(130); }
+      abort.abort();
+    });
+  }
+}
+
+export const summaryText = (s) => `${s.file}${s.frames ? `\n  ${s.frames} frames, ${s.durationSec.toFixed(2)} s, ${s.measuredFps} fps measured (${s.width}x${s.height})` : ''}${(s.warnings ?? []).map((w) => `\n  ! ${w}`).join('')}`;
+const resultError = (r) => new UserError(r.error, { code: r.exitCode ?? 1, hint: r.hint });
 
 function requireConfig(flags) {
   const path = findConfigPath();
@@ -96,7 +125,7 @@ async function cmdWeb(flags, mode) {
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(sig, () => abort.abort());
   await serveConfigurator({
     configPath: path, projectRoot: projectRootFor(path, globalConfigPath()), mode, profileName,
-    port: flags.port ? Number(flags.port) : 0, signal: abort.signal,
+    port: numFlag(flags, 'port', (v) => Number.isInteger(v) && v >= 0 && v <= 65535, 'a port number') ?? 0, signal: abort.signal,
     onReady: (url) => {
       console.error(`${mode === 'preview' ? 'Preview' : 'Configure'} is open at:\n  ${url}\nThe camera stays busy until you press "Close" in the page or Ctrl-C here.`);
       if (!flags['no-open']) openBrowser(url);
@@ -151,72 +180,99 @@ async function cmdSetup(flags) {
   return cmdWeb(flags, 'configure');
 }
 
-function stateFile(configPath) { return join(dirname(configPath), 'recording.json'); }
-
 async function cmdRecord(flags) {
   if (!flags.out) throw new UserError('--out FILE is required', { code: 2 });
+  const durationSec = durationFlag(flags);
   const { profile } = requireConfig(flags);
   const abort = new AbortController();
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => abort.abort());
-  const summary = await recordToFile(profile, flags.out, { durationSec: flags.duration ? Number(flags.duration) : undefined, signal: abort.signal });
-  print(flags, summary, `Recorded ${summary.file}\n  ${summary.frames} frames, ${summary.durationSec.toFixed(2)} s, ${summary.measuredFps} fps measured (${summary.width}x${summary.height})${summary.warnings.map((w) => `\n  ! ${w}`).join('')}`);
+  abortOnSignals(abort);
+  const summary = await recordToFile(profile, flags.out, { durationSec, signal: abort.signal });
+  print(flags, summary, `Recorded ${summaryText(summary)}`);
 }
 
 async function cmdStart(flags) {
   if (!flags.out) throw new UserError('--out FILE is required', { code: 2 });
   const { path, profile } = requireConfig(flags);
-  const sf = stateFile(path);
-  if (existsSync(sf)) {
-    const st = JSON.parse(readFileSync(sf, 'utf8'));
-    if (alive(st.pid)) throw new UserError(`A recording is already running (pid ${st.pid}, ${st.out}).`, { code: 1, hint: 'Run `agent-eye stop` first.' });
-    unlinkSync(sf);
+  const sf = statePath(path);
+  const id = randomBytes(16).toString('hex');
+  const out = resolve(flags.out);
+  await claim(sf, { id, out, profile: profile.name });
+  const logPath = join(dirname(sf), 'worker.log');
+  let child;
+  try {
+    const log = openSync(logPath, 'a');
+    const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-eye.js');
+    const args = [bin, '_worker', '--id', id, '--out', out, '--state', sf, ...(flags.profile ? ['--profile', flags.profile] : [])];
+    child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', log, log], cwd: process.cwd() });
+    closeSync(log);
+  } catch (e) {
+    await removeState(sf, id); // an unused claim must not block the next start
+    throw e;
   }
-  mkdirSync(dirname(sf), { recursive: true });
-  const log = openSync(join(dirname(sf), 'worker.log'), 'a');
-  const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-eye.js');
-  const args = [bin, '_worker', '--out', resolve(flags.out), '--state', sf, ...(flags.profile ? ['--profile', flags.profile] : [])];
-  const child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', log, log], cwd: process.cwd() });
+  // The worker is detached, so a Ctrl-C here would not reach it: cancel it explicitly.
+  const abort = new AbortController();
+  abortOnSignals(abort);
+  let exited = false;
+  child.on('exit', () => { exited = true; }).on('error', () => { exited = true; });
   child.unref();
-  for (let i = 0; i < 160; i++) {
+  const tail = () => (existsSync(logPath) ? readFileSync(logPath, 'utf8').trim().split('\n').slice(-6).join('\n') : '');
+  for (const deadline = Date.now() + 45000; Date.now() < deadline;) {
     await sleep(150);
-    if (existsSync(sf)) { const st = JSON.parse(readFileSync(sf, 'utf8')); if (st.ready) return print(flags, { ok: true, ...st }, `Recording to ${st.out} (pid ${st.pid}). Stop with: agent-eye stop`); }
-    if (!alive(child.pid)) break;
+    if (abort.signal.aborted) {
+      const res = await stopRecorder(sf).catch(() => null);
+      throw res?.ok === false ? resultError(res) : new UserError('Interrupted; the background recording was stopped.', { code: 1 });
+    }
+    const wasExited = exited;
+    const st = readState(sf);
+    if (!st) throw new UserError('The background recording was stopped before it started.', { code: 1 });
+    if (st.id !== id) throw new UserError('The background recording was taken over by another command.', { code: 1 });
+    if (st.result) { await removeState(sf, id); throw resultError(st.result); }
+    if (st.ready) return print(flags, { ok: true, pid: st.pid, out: st.out, profile: st.profile, startedAtMs: st.startedAtMs }, `Recording to ${st.out} (pid ${st.pid}). Stop with: agent-eye stop`);
+    if (wasExited) { await removeState(sf, id); throw new UserError(`The background recorder exited while starting.\n${tail()}`, { code: 3 }); }
   }
-  const tail = existsSync(join(dirname(sf), 'worker.log')) ? readFileSync(join(dirname(sf), 'worker.log'), 'utf8').trim().split('\n').slice(-6).join('\n') : '';
-  throw new UserError(`The background recorder did not start.\n${tail}`, { code: 3 });
+  // Too slow: cancel the start so the worker does not hold the camera behind our back.
+  await stopRecorder(sf).catch(() => null);
+  throw new UserError(`The background recorder did not start within 45 s.\n${tail()}`, { code: 3 });
 }
 
 async function cmdWorker(flags) {
-  const { profile } = requireConfig(flags);
-  const out = flags.out, sf = flags.state;
+  const { id, out, state: sf } = flags;
   const abort = new AbortController();
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => abort.abort());
-  writeFileSync(sf, JSON.stringify({ pid: process.pid, out, profile: profile.name, ready: false }));
-  const onStarted = (startedAtMs) => writeFileSync(sf, JSON.stringify({ pid: process.pid, out, profile: profile.name, ready: true, startedAtMs }));
-  try { await recordToFile(profile, out, { signal: abort.signal, onStarted }); } finally { if (existsSync(sf)) unlinkSync(sf); }
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => abort.abort());
+  const info = { pid: process.pid, out, ready: false };
+  const ctl = await listenControl(id, { info: () => info, onStop: () => abort.abort() });
+  await updateState(sf, id, { pid: process.pid, port: ctl.port });
+  let result;
+  try {
+    const { profile } = requireConfig(flags);
+    info.profile = profile.name;
+    const onStarted = (startedAtMs) => {
+      Object.assign(info, { ready: true, startedAtMs });
+      updateState(sf, id, { ready: true, startedAtMs }).catch((e) => console.error(e.message));
+    };
+    result = { ok: true, summary: await recordToFile(profile, out, { signal: abort.signal, onStarted }) };
+  } catch (e) {
+    result = { ok: false, error: e.message, ...(e.hint ? { hint: e.hint } : {}), exitCode: e instanceof UserError ? e.exitCode : 1 };
+    console.error(`${new Date().toISOString()} ${out}: ${e.message}`);
+  }
+  await updateState(sf, id, { result }); // read by `stop` or `status` if nobody is connected now
+  ctl.finish(result);
+  if (!result.ok) process.exitCode = result.exitCode;
 }
-
-function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
 
 async function cmdStop(flags) {
   const { path } = requireConfig(flags);
-  const sf = stateFile(path);
-  if (!existsSync(sf)) throw new UserError('No background recording is running.', { code: 1 });
-  const st = JSON.parse(readFileSync(sf, 'utf8'));
-  process.kill(st.pid, 'SIGINT');
-  for (let i = 0; i < 200 && alive(st.pid); i++) await sleep(150);
-  if (alive(st.pid)) throw new UserError(`The recorder (pid ${st.pid}) did not stop.`, { code: 1 });
-  const side = st.out.replace(/\.[^.]+$/, '') + '.json';
-  const summary = existsSync(side) ? JSON.parse(readFileSync(side, 'utf8')) : { file: st.out };
-  print(flags, summary, `Stopped. ${summary.file}${summary.frames ? `\n  ${summary.frames} frames, ${summary.durationSec.toFixed(2)} s, ${summary.measuredFps} fps measured` : ''}`);
+  const res = await stopRecorder(statePath(path));
+  if (!res) throw new UserError('The background recorder ended without reporting a result; no valid video is known.', { code: 1, hint: `See ${join(dirname(path), 'worker.log')}.` });
+  if (!res.ok) throw resultError(res);
+  print(flags, res.summary, `Stopped. ${summaryText(res.summary)}`);
 }
 
 async function cmdStatus(flags) {
   const path = findConfigPath();
-  const sf = path && stateFile(path);
-  const st = sf && existsSync(sf) ? JSON.parse(readFileSync(sf, 'utf8')) : null;
-  const running = !!st && alive(st.pid);
-  print(flags, { running, ...(running ? st : {}) }, running ? `Recording to ${st.out} (pid ${st.pid})` : 'Not recording.');
+  const r = path ? await recorderStatus(statePath(path)) : { running: false };
+  const last = r.last && (r.last.ok ? `the last background recording finished: ${r.last.summary.file}` : `the last background recording failed: ${r.last.error}`);
+  print(flags, r, r.running ? `Recording to ${r.out}${r.pid ? ` (pid ${r.pid})` : ''}${r.ready ? '' : ', still starting'}` : `Not recording${last ? `; ${last}` : ''}.`);
 }
 
 export async function main(argv) {
@@ -233,7 +289,7 @@ export async function main(argv) {
       case 'configure': return flags.set !== undefined ? await cmdConfigureJson(flags) : await cmdWeb(flags, 'configure');
       case 'preview': return await cmdWeb(flags, 'preview');
       case 'show': { const { path, profile } = requireConfig(flags); print(flags, { configPath: path, profile }, `${path}\n${JSON.stringify(profile, null, 2)}`); return; }
-      case 'snapshot': { if (!flags.out) throw new UserError('--out FILE.jpg is required', { code: 2 }); const { profile } = requireConfig(flags); const r = await takeSnapshot(profile, flags.out, { warmupMs: flags.warmup ? Number(flags.warmup) : undefined }); print(flags, r, `Saved ${r.file}`); return; }
+      case 'snapshot': { if (!flags.out) throw new UserError('--out FILE.jpg is required', { code: 2 }); const warmupMs = numFlag(flags, 'warmup', (v) => v >= 0 && v <= 60000, 'milliseconds between 0 and 60000'); const { profile } = requireConfig(flags); const abort = new AbortController(); abortOnSignals(abort); const r = await takeSnapshot(profile, flags.out, { warmupMs, signal: abort.signal }); print(flags, r, `Saved ${r.file}`); return; }
       case 'record': return await cmdRecord(flags);
       case 'start': return await cmdStart(flags);
       case 'stop': return await cmdStop(flags);

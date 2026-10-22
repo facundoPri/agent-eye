@@ -1,16 +1,21 @@
 import { spawn } from 'node:child_process';
 import { existsSync, accessSync, constants } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 
 const EXTRA_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/opt/local/bin'];
 
-export function findBin(name) {
-  const dirs = [...(process.env.PATH || '').split(delimiter), ...EXTRA_PATHS];
+/** First executable called `name` on PATH (then the usual Homebrew/MacPorts places). Windows adds PATHEXT (ffmpeg.exe). */
+export function findBin(name, { platform = process.platform, env = process.env } = {}) {
+  const win = platform === 'win32';
+  const dirs = [...(env.PATH ?? env.Path ?? '').split(win ? ';' : ':').filter(Boolean), ...(win ? [] : EXTRA_PATHS)];
+  const names = win ? ['', ...(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase())].map((e) => name + e) : [name];
   for (const dir of dirs) {
-    const p = join(dir, name);
-    try {
-      if (existsSync(p)) { accessSync(p, constants.X_OK); return p; }
-    } catch { /* not executable, keep looking */ }
+    for (const n of names) {
+      const p = join(dir, n);
+      try {
+        if (existsSync(p)) { accessSync(p, win ? constants.F_OK : constants.X_OK); return p; }
+      } catch { /* not executable, keep looking */ }
+    }
   }
   return null;
 }

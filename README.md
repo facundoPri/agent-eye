@@ -20,9 +20,16 @@ Android recordings are the phone's H.264 stream copied as-is (no re-encode) unle
 rotate. Every recording gets a `.json` next to it with the **measured** fps, frame count and the
 host clock at start and stop, so you can line the video up with logs.
 
+A recording only counts when ffmpeg finished the file and `ffprobe` can read frames from it.
+Otherwise `record` / `stop` exit with code 3 ("Recording failed"), the incomplete file is left
+where it was and no `.json` is written; a `.json` left by an earlier take of the same file is
+removed when the new recording starts.
+
 ## Requirements
 
-- Node 20+ and `ffmpeg` (`brew install ffmpeg`).
+- macOS with Node 20+ and `ffmpeg` (`brew install ffmpeg`, which includes `ffprobe`; without
+  `ffprobe` recordings are not checked and the summary says so). Only macOS hosts have been tested;
+  Android capture may work on Linux, and Windows finds `ffmpeg.exe` / `adb.exe` but is untested.
 - For Android: `adb` (`brew install android-platform-tools`), USB debugging on, and the
   "Allow USB debugging" prompt accepted. The camera server is bundled; scrcpy is not needed.
 - macOS: the first camera use asks for permission for your terminal app
@@ -46,9 +53,9 @@ agent-eye configure --set JSON   no browser. JSON, @file.json or - (stdin). Vali
 agent-eye preview                browser on the saved profile, to check or adjust it
 agent-eye show                   print the saved profile
 agent-eye snapshot --out a.jpg   full-resolution still with the saved framing (lets an agent look)
-agent-eye record --out v.mp4 --duration 30
-agent-eye start --out v.mp4      record in the background
-agent-eye stop                   stop it and print the summary
+agent-eye record --out v.mp4 --duration 30   --duration is seconds (> 0); without it, until Ctrl-C
+agent-eye start --out v.mp4      record in the background (one at a time per project)
+agent-eye stop                   stop it and print the summary, or the reason it failed
 agent-eye status
 agent-eye skill [--install]      is the agent skill in this project? --install adds or updates it
 ```
@@ -71,6 +78,13 @@ place is reported as missing, current or outdated (different from the bundled co
 `preview` requires an existing profile. The page's server only lives while you use it. The
 profile is a file, so recording never needs the server. While the page is open **it holds
 the camera**: press "Close and release the camera" (or Ctrl-C) before an agent records.
+Closing the tab also releases the camera, about 10 s later; the command itself keeps waiting
+for Close or Ctrl-C, and reopening its URL starts the preview again.
+
+**Confirm and save** stores the settings together with a still of what the preview shows. It
+is refused while the preview is still restarting with changed settings (camera, size, fps,
+zoom, rotation), so the still always matches the saved profile. A saved crop is kept exactly
+as it is until you touch the framing controls, which make crops with the frame's proportions.
 
 ## Profile
 
@@ -102,6 +116,13 @@ Confirming in the browser also saves a still of the approved framing to
 The web UI listens on 127.0.0.1 only, and every request needs a random per-session token and a
 local `Host` header, so other pages in your browser cannot reach the camera.
 
+## Background recordings
+
+`start` claims `.agent-eye/recording.json` under a lock, so a second `start` in the same project
+is refused while one runs. The worker answers `stop` and `status` on a 127.0.0.1 port, and only
+to requests carrying its random id; `stop` never signals a process by pid. `stop` during start-up
+cancels it (exit 1, nothing recorded). The worker's log is `.agent-eye/worker.log`.
+
 ## Limits worth knowing
 
 - One program at a time can use a camera: preview and record are exclusive, and a phone camera
@@ -116,5 +137,9 @@ local `Host` header, so other pages in your browser cannot reach the camera.
 ```
 npm test
 ```
+
+The tests use fake `ffmpeg`, `ffprobe` and `adb` programs and a fake phone tunnel (see
+`test/helpers/fakes.js`); they never open a camera. Real capture still needs checking by hand on
+the hardware listed above.
 
 `vendor/scrcpy-server-v4.1.jar` is the unmodified scrcpy server (Apache-2.0, see `vendor/NOTICE`).
