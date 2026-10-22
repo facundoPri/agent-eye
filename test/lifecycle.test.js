@@ -1,7 +1,7 @@
 // Camera session and recording lifecycle against fake tools (see helpers/fakes.js). No hardware.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ANDROID_PROFILE, setupFakes, waitFor, withEnv } from './helpers/fakes.js';
 import { startSession } from '../src/session.js';
@@ -66,6 +66,22 @@ test('a timed recording finishes, is probed and gets a sidecar summary', () => i
   assert.equal(s.frames, 60);
   assert.deepEqual(s.warnings, []);
   assert.ok(existsSync(out('e.json')));
+}));
+
+test('the phone stream reaches ffmpeg as MPEG-TS carrying the phone timestamps', () => inFakes(async () => {
+  await recordToFile(ANDROID_PROFILE, out('ts.mp4'), { durationSec: 0.4 });
+  assert.match(readFileSync(out('ts.mp4'), 'utf8'), /^FAKEVIDEO [1-9]\d* ts=ok$/);
+}));
+
+test('the summary warns when frame timestamps are bunched (arrival times, not capture times)', () => inFakes(async () => {
+  let t = 0; // 60 fps on average, but in bursts of 5 / 16.7 / 28 ms like video7.mp4
+  fakes.ffprobe({ ptsTimes: Array.from({ length: 61 }, (_, i) => (t += [0.0167, 0.005, 0.028][i % 3])) });
+  try {
+    const s = await recordToFile(ANDROID_PROFILE, out('jit.mp4'), { durationSec: 0.3 });
+    assert.equal(s.frameIntervalMs.median, 16.7);
+    assert.equal(s.frameIntervalMs.irregular, 40);
+    assert.match(s.warnings.join('\n'), /timestamps are irregular: 40 of 60 intervals/);
+  } finally { fakes.ffprobe({}); }
 }));
 
 test('stopping early ends a long --duration recording without waiting for its timer', { timeout: 10000 }, () => inFakes(async () => {

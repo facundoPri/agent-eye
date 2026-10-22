@@ -29,7 +29,8 @@ export function canStreamCopy(profile) {
 
 export function inputArgs(profile, { macIndex } = {}) {
   if (profile.source.startsWith('android:')) {
-    return ['-use_wallclock_as_timestamps', '1', '-flags', 'low_delay', '-probesize', '1000000', '-analyzeduration', '0', '-f', 'h264', '-i', 'pipe:0'];
+    // MPEG-TS carrying the phone's capture timestamps (see mpegts.js), not arrival times on the Mac.
+    return ['-flags', 'low_delay', '-probesize', '1000000', '-analyzeduration', '0', '-f', 'mpegts', '-i', 'pipe:0'];
   }
   if (macIndex === undefined) throw new Error('macIndex is required for a Mac camera');
   return ['-f', 'avfoundation', '-framerate', String(profile.fps), '-video_size', `${profile.width}x${profile.height}`, '-i', `${macIndex}:none`];
@@ -58,7 +59,9 @@ export function androidServerOptions(profile, cameraId) {
     'video_source=camera', `camera_id=${cameraId}`, `camera_size=${profile.width}x${profile.height}`,
     `camera_fps=${profile.fps}`, `max_fps=${profile.fps}`,
     `video_bit_rate=${Math.round((profile.bitrate ?? (profile.fps > 60 ? 40 : 20)) * 1e6)}`,
-    'audio=false', 'control=false', 'raw_stream=true', 'tunnel_forward=true',
+    'audio=false', 'control=false', 'tunnel_forward=true',
+    // Bare packets, each with its 12-byte header (capture PTS + size): send_frame_meta is what raw_stream turns off.
+    'send_device_meta=false', 'send_dummy_byte=false', 'send_stream_meta=false', 'send_frame_meta=true',
   ];
   if (profile.zoom > 1) opts.push(`camera_zoom=${profile.zoom}`);
   if (profile.fps > 60) opts.push('camera_high_speed=true');

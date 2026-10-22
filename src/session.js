@@ -4,6 +4,7 @@ import net from 'node:net';
 import { findBin, raceTimer, run, sleep, UserError } from './util.js';
 import { REMOTE_JAR, SCRCPY_VERSION, pushServer, resolveMacIndex } from './devices.js';
 import { androidServerOptions, inputArgs } from './ffargs.js';
+import { scrcpyToTs } from './mpegts.js';
 
 const MAC_PERMISSION_HINT =
   'macOS blocked camera access for this terminal. Open System Settings > Privacy & Security > Camera, enable your terminal app, then retry.';
@@ -98,10 +99,13 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs })
   }
 
   const startedAt = Date.now();
-  ff.stdin.write(firstChunk);
+  const ts = scrcpyToTs();
   // pipe() pauses the phone stream while ffmpeg is behind (a slow re-encode at 240 fps) instead of buffering it in memory.
-  socket.pipe(ff.stdin);
-  const endInput = () => { if (!ff.stdin.writableEnded && !ff.stdin.destroyed) ff.stdin.end(); };
+  ts.pipe(ff.stdin);
+  ts.on('error', () => { socket.destroy(); ff.stdin.end(); });
+  ts.write(firstChunk);
+  socket.pipe(ts);
+  const endInput = () => { if (!ts.writableEnded && !ts.destroyed) ts.end(); };
   socket.on('close', endInput); socket.on('error', endInput);
   ffmpegDone.then(cleanup);
   return { startedAt, stopInput: async () => { socket.destroy(); endInput(); } };

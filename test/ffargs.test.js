@@ -64,3 +64,12 @@ test('native zoom is sent only above 1x; bitrate override wins', () => {
   const o = androidServerOptions({ ...android, zoom: 2.5, bitrate: 12 }, 1);
   assert.ok(o.includes('camera_zoom=2.5') && o.includes('camera_id=1') && o.includes('video_bit_rate=12000000'));
 });
+
+test('Android input keeps the phone capture timestamps, not arrival times', () => {
+  const opts = androidServerOptions(android, 0);
+  assert.ok(opts.includes('send_frame_meta=true'));
+  assert.ok(!opts.some((o) => o.startsWith('raw_stream')), 'raw_stream would turn the frame headers off');
+  const args = inputArgs(android);
+  assert.equal(args[args.indexOf('-f') + 1], 'mpegts');
+  assert.ok(!args.includes('-use_wallclock_as_timestamps'));
+});

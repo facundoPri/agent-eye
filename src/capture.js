@@ -14,7 +14,7 @@ export async function probeVideo(path) {
   const ffprobe = findBin('ffprobe');
   if (!ffprobe) return null;
   const r = await run(ffprobe, ['-v', 'error', '-count_packets', '-select_streams', 'v:0',
-    '-show_entries', 'stream=codec_name,width,height,nb_read_packets:format=duration,size', '-of', 'json', path], { timeoutMs: 180000 });
+    '-show_entries', 'stream=codec_name,width,height,nb_read_packets:format=duration,size:packet=pts_time', '-of', 'json', path], { timeoutMs: 180000 });
   if (r.code === -2) return { unchecked: 'ffprobe took longer than 3 minutes' };
   let j = null;
   try { j = JSON.parse(r.stdout); } catch { /* reported below */ }
@@ -22,8 +22,31 @@ export async function probeVideo(path) {
   if (r.code !== 0 || !s) return { unreadable: r.stderr.trim().split('\n').pop() || 'no video stream' };
   const duration = Number(j.format?.duration) || 0;
   const frames = Number(s.nb_read_packets) || 0;
+  const timing = frameTiming((j.packets ?? []).map((p) => Number(p.pts_time)).filter(Number.isFinite));
   return { codec: s.codec_name, width: s.width, height: s.height, frames, durationSec: duration,
-    measuredFps: duration > 0 ? Math.round((frames / duration) * 10) / 10 : 0, bytes: Number(j.format?.size) || 0 };
+    measuredFps: duration > 0 ? Math.round((frames / duration) * 10) / 10 : 0, bytes: Number(j.format?.size) || 0,
+    ...(timing && { frameIntervalMs: timing }) };
+}
+
+/**
+ * Spacing of frame timestamps (seconds, any order): median, extremes and how many intervals are off
+ * by more than half the median. Capture timestamps are steady; arrival times on the host are bunched.
+ */
+export function frameTiming(pts) {
+  if (pts.length < 3) return null;
+  const t = [...pts].sort((a, b) => a - b);
+  const d = t.slice(1).map((v, i) => (v - t[i]) * 1000);
+  const sorted = [...d].sort((a, b) => a - b);
+  const median = sorted[Math.floor(d.length / 2)];
+  const r = (v) => Math.round(v * 100) / 100;
+  return { median: r(median), min: r(sorted[0]), max: r(sorted.at(-1)), irregular: d.filter((v) => Math.abs(v - median) > median / 2).length };
+}
+
+/** A warning when more than 1% of frame intervals are irregular, else null. */
+export function timingWarning(timing, frames) {
+  if (!timing || timing.irregular <= Math.max(2, (frames - 1) * 0.01)) return null;
+  return `Frame timestamps are irregular: ${timing.irregular} of ${frames - 1} intervals are off by more than half the typical ${timing.median} ms `
+    + `(range ${timing.min}–${timing.max} ms). Playback, seeking and per-frame timing will be uneven; dropped frames also show up here.`;
 }
 
 /**
@@ -78,6 +101,8 @@ export async function recordToFile(profile, outPath, { durationSec, signal, onSt
     if (probe?.measuredFps && probe.measuredFps < profile.fps * 0.9) {
       summary.warnings.push(`Measured ${probe.measuredFps} fps, below the ${profile.fps} fps requested.`);
     }
+    const jitter = timingWarning(probe?.frameIntervalMs, probe?.frames);
+    if (jitter) summary.warnings.push(jitter);
     writeFileSync(sidecarPath(out), JSON.stringify(summary, null, 2) + '\n');
     return summary;
   } finally {

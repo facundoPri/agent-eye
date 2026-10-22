@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, 
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { scrcpyPacket } from '../../src/mpegts.js';
 import { findBin } from '../../src/util.js';
 
 const COMMON = `
@@ -33,14 +34,18 @@ const frames = out === 'pipe:1' ? setInterval(() => process.stdout.write(Buffer.
 const finish = (code) => {
   if (done || c.ignoreStop) return;
   done = true; clearInterval(frames);
-  if (out !== 'pipe:1') fs.writeFileSync(out, c.output === 'partial' ? 'PARTIAL' : 'FAKEVIDEO ' + bytes);
+  if (out !== 'pipe:1') fs.writeFileSync(out, c.output === 'partial' ? 'PARTIAL' : 'FAKEVIDEO ' + bytes + (inFormat === 'mpegts' ? ' ts=' + (tsOk ? 'ok' : 'bad') : ''));
   if (c.stderr) process.stderr.write(c.stderr + '\\n');
   process.stdin.destroy();
   setTimeout(() => process.exit(code ?? c.exitCode ?? 0), 20);
 };
 process.stdout.on('error', () => {});
 process.on('SIGINT', () => finish(255));
-process.stdin.on('data', (d) => { bytes += d.length; if (args.includes('avfoundation') && d.includes('q')) finish(); });
+let tsOk = true; // MPEG-TS input: every 188-byte packet starts with the sync byte
+process.stdin.on('data', (d) => {
+  if (inFormat === 'mpegts') for (let i = (188 - bytes % 188) % 188; i < d.length; i += 188) if (d[i] !== 0x47) tsOk = false;
+  bytes += d.length; if (args.includes('avfoundation') && d.includes('q')) finish();
+});
 process.stdin.on('end', () => finish());
 if (c.stallMs) { process.stdin.pause(); setTimeout(() => process.stdin.resume(), c.stallMs); }
 setInterval(() => {}, 1000);
@@ -49,7 +54,9 @@ setInterval(() => {}, 1000);
 const FFPROBE = `${COMMON}
 const text = (() => { try { return fs.readFileSync(args[args.length - 1], 'utf8'); } catch { return ''; } })();
 if (!text.startsWith('FAKEVIDEO')) { process.stderr.write('moov atom not found\\n'); process.exit(1); }
-console.log(JSON.stringify({ streams: [{ codec_name: 'h264', width: 1920, height: 1080, nb_read_packets: '60' }], format: { duration: '1.000', size: String(text.length) } }));
+const pts = cfg('ffprobe').ptsTimes; // optional packet timestamps (seconds)
+console.log(JSON.stringify({ streams: [{ codec_name: 'h264', width: 1920, height: 1080, nb_read_packets: String(pts?.length ?? 60) }], format: { duration: '1.000', size: String(text.length) },
+  ...(pts && { packets: pts.map((t) => ({ pts_time: String(t) })) }) }));
 `;
 
 const ADB = `${COMMON}
@@ -89,7 +96,8 @@ export async function setupFakes() {
     if (findBin(name, { env }) !== join(bin, name)) throw new Error(`refusing to run: ${name} does not resolve to the fake`);
   }
 
-  // The phone end of `adb forward`. mode: stream (bytes every 20 ms), silent, delay (stream after delayMs), flood.
+  // The phone end of `adb forward`, framed like scrcpy (12-byte header per packet).
+  // mode: stream (a packet every 20 ms), silent, delay (stream after delayMs), flood.
   const tunnel = { mode: 'stream', delayMs: 0, flushed: 0, sockets: new Set() };
   const server = net.createServer((sock) => {
     tunnel.sockets.add(sock);
@@ -97,12 +105,13 @@ export async function setupFakes() {
     sock.on('close', () => tunnel.sockets.delete(sock));
     const stream = () => {
       if (tunnel.mode === 'flood') {
-        const chunk = Buffer.alloc(1 << 20, 7);
+        const chunk = scrcpyPacket(Buffer.alloc(1 << 20, 7));
         const pump = () => { while (!sock.destroyed && sock.write(chunk)) tunnel.flushed += chunk.length; };
         sock.on('drain', () => { tunnel.flushed += chunk.length; pump(); });
         return pump();
       }
-      const t = setInterval(() => (sock.destroyed ? clearInterval(t) : sock.write(Buffer.alloc(4096, 1))), 20);
+      let ptsUs = 0;
+      const t = setInterval(() => (sock.destroyed ? clearInterval(t) : sock.write(scrcpyPacket(Buffer.alloc(4096, 1), { ptsUs: ptsUs += 20000 }))), 20);
       sock.on('close', () => clearInterval(t));
     };
     if (tunnel.mode === 'silent') return;
@@ -121,6 +130,7 @@ export async function setupFakes() {
   return {
     dir, env, tunnel,
     ffmpeg: (cfg) => set('ffmpeg', cfg),
+    ffprobe: (cfg) => set('ffprobe', cfg),
     adb: (cfg) => set('adb', { tunnelPort: port, ...cfg }),
     /** Fake ffmpeg / camera servers and background workers of this test run that are still alive. */
     live: () => execFileSync(PS, ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' }).split('\n')
