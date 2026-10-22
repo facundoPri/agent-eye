@@ -115,9 +115,10 @@ the framing.
 - `bitrate`: Mbit/s. Default 20, or 40 above 60 fps.
 
 A config holds several named profiles and one default, used when a command has no `--profile`.
-`configure --set JSON --name hs240` (or `--profile hs240`) writes only `hs240`, creating it if
-new; without a name it updates the default profile. The default changes only with `--default`,
-or when the config has none yet.
+`configure --set JSON --name hs240` (or `--profile hs240`, or `"name": "hs240"` in the JSON)
+writes only `hs240`, creating it if new; without a name it updates the default profile. The
+default changes only with `--default`, or when the config has no valid default (none yet, or
+one naming a profile that no longer exists).
 
 Confirming in the browser also saves a still of the approved framing to
 `.agent-eye/snapshots/<name>.jpg`.

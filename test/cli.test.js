@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -224,4 +224,27 @@ test('`configure --set` refuses --name and --profile that disagree', { timeout: 
   assert.equal(r.code, 2);
   assert.match(r.json.error, /different profiles/);
   assert.deepEqual(Object.keys(readConfig(root).profiles), ['default']);
+});
+
+test('`configure --set` input mistakes are refused before the config is touched', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  const before = readFileSync(join(root, '.agent-eye', 'config.json'), 'utf8');
+  for (const [args, why] of [
+    [['--name', 'x', '--default=false', '--set', hs], /--default takes no value/],
+    [['--set', JSON.stringify({ ...JSON.parse(hs), name: 5 })], /"name" .* must be a string/],
+    [['--name', '--set', hs], /--name needs a value/],
+  ]) {
+    const r = await cli(root, ['configure', ...args]);
+    assert.equal(r.code, 2, `${args.join(' ')}: ${r.stdout}`);
+    assert.match(r.json.error, why);
+  }
+  assert.equal(readFileSync(join(root, '.agent-eye', 'config.json'), 'utf8'), before);
+});
+
+test('`configure --set` on an empty project makes the first profile the default', { timeout: 20000 }, async () => {
+  const root = fakes.project();
+  rmSync(join(root, '.agent-eye', 'config.json'));
+  const r = await cli(root, ['configure', '--name', 'first', '--set', hs]);
+  assert.equal(r.code, 0, r.stdout);
+  assert.equal(readConfig(root).default, 'first');
 });
