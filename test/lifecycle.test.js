@@ -172,7 +172,7 @@ test('live control: zoom answers with the lens in use, a scan with where it focu
   fakes.adb({ subjectFocus: 3.5 });
   rmSync(join(fakes.dir, 'commands'), { force: true });
   const servers = fakes.started('adbserver');
-  const s = await startSession(ANDROID_PROFILE, ['-f', 'null', '-'], { waitReady: true });
+  const s = await startSession({ ...ANDROID_PROFILE, source: 'android:FAKE1/4' }, ['-f', 'null', '-'], { waitReady: true }); // the camera that switches lenses
   try {
     assert.equal(await s.control.zoom(2.5), '3');
     assert.equal(await s.control.zoom(1.5), '0');

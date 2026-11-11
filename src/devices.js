@@ -87,10 +87,13 @@ export function parseAndroidCameras(text) {
         locks: line.match(/locks=([\w+]+)/)?.[1].split('+') ?? [],
         afRegions: /, af-regions/.test(line),
         hidden: /, hidden/.test(line),
+        // A lens of a logical camera, opened on its own: the id of that logical camera.
+        lensOf: line.match(/, lens-of=(\w+)/)?.[1] ?? null,
         // A logical camera that switches lenses with the zoom: each lens's zoom and nearest focus (diopters).
         lenses: (() => {
           const l = line.match(/lenses=\[([^\]]*)\]/);
-          return l ? l[1].split(',').map((t) => t.trim().split(':')).map(([id, zoom, nearest]) => ({ id, zoom: Number(zoom), nearest: Number(nearest ?? 0) })) : null;
+          return l ? l[1].split(',').map((t) => t.trim().split(':'))
+            .map(([id, zoom, nearest, px]) => ({ id, zoom: Number(zoom), nearest: Number(nearest ?? 0), px: Number(px ?? 0) })) : null;
         })(),
         sizes: [], highSpeed: [],
       };
@@ -108,6 +111,33 @@ export function parseAndroidCameras(text) {
     if (sz) cam.sizes.push(sz[1]);
   }
   return cams;
+}
+
+/**
+ * Tie each lens to its group: the logical camera's lens list goes on every member, numbered by zoom
+ * (lens 1 = widest), with `lensId` (this camera's own lens; null for the logical camera, which switches).
+ */
+export function groupLenses(cams) {
+  for (const cam of cams) {
+    const logical = cam.lenses ? cam : cams.find((c) => String(c.id) === cam.lensOf && c.lenses);
+    if (!logical) continue;
+    const numbered = [...logical.lenses].sort((a, b) => a.zoom - b.zoom).map((l, i) => ({ ...l, n: i + 1, kind: lensKind(l) }));
+    cam.lenses = numbered;
+    cam.logicalId = String(logical.id);
+    cam.lensId = cam === logical ? null : String(cam.id);
+  }
+  return cams;
+}
+
+/** What a lens is, from its zoom: ultrawide below 0.9x, main up to 1.2x, telephoto above. */
+export const lensKind = (l) => (l.zoom < 0.9 ? 'ultrawide' : l.zoom <= 1.2 ? 'main' : 'telephoto');
+
+/** "lens 3 · telephoto 2.16×" for a lens, "all lenses (automatic)" for the logical camera. */
+export function cameraLabel(c) {
+  if (!c.lenses) return c.facing;
+  if (c.lensId === null) return `${c.facing}, all lenses (automatic)`;
+  const l = c.lenses.find((x) => x.id === c.lensId);
+  return `${c.facing}, lens ${l.n} · ${l.kind} ${l.zoom}×`;
 }
 
 export async function listAndroidPhones() {
@@ -128,7 +158,7 @@ export async function androidCameras(serial) {
   await pushServer(serial);
   const { stdout, stderr, code } = await run(adb, ['-s', serial, 'shell', `CLASSPATH=${REMOTE_JAR}`, 'app_process', '/',
     'com.genymobile.scrcpy.Server', SCRCPY_VERSION, 'scid=00000001', 'log_level=info', 'list_cameras=true', 'list_camera_sizes=true'], { timeoutMs: 20000 });
-  const cams = parseAndroidCameras(stdout);
+  const cams = groupLenses(parseAndroidCameras(stdout));
   if (!cams.length) throw new UserError(`The phone reported no cameras (${(stderr || stdout).trim().slice(-200)}).`, { code: 3 });
   return cams;
 }
@@ -148,7 +178,7 @@ export async function listDevices({ capabilities = false } = {}) {
       const cams = await androidCameras(ph.serial);
       for (const c of cams) {
         devices.push({ id: `android:${ph.serial}/${c.id}`, kind: 'android', serial: ph.serial, cameraId: c.id,
-          name: `${ph.model} (${c.facing}${c.lenses ? ', all lenses' : c.hidden ? ', hidden' : ''})`, ...(capabilities ? { caps: c } : { maxSize: c.maxSize, fps: c.fps, zoomRange: c.zoomRange, highSpeed: c.highSpeed, focusRange: c.focusRange, locks: c.locks, lenses: c.lenses }) });
+          name: `${ph.model} (${cameraLabel(c)})`, ...(capabilities ? { caps: c } : { maxSize: c.maxSize, fps: c.fps, zoomRange: c.zoomRange, highSpeed: c.highSpeed, focusRange: c.focusRange, locks: c.locks, lenses: c.lenses, lensId: c.lensId ?? null }) });
       }
     } catch (e) {
       problems.push({ serial: ph.serial, state: ph.state, model: ph.model, hint: e.message });

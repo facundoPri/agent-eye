@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { centeredCrop, frameSelection, lensAt, maxCenteredZoom, pictureToView, planZoom, rezoom, viewToCamera } from '../src/framing.js';
+import { cameraToView, centeredCrop, frameSelection, lensAt, maxCenteredZoom, pictureToView, planZoom, rankLenses, rezoom, viewToCamera } from '../src/framing.js';
 
 const near = (a, b, eps = 1e-9) => Object.keys(b).every((k) => Math.abs(a[k] - b[k]) < eps);
 const LENSES = [{ id: '0', zoom: 1, nearest: 10 }, { id: '2', zoom: 0.61, nearest: 40 }, { id: '3', zoom: 2.16, nearest: 2 }];
@@ -75,4 +75,38 @@ test('framing a far subject keeps the telephoto; a main-lens-only camera just zo
   assert.ok(main.changes.zoom > 1.1 && main.changes.zoom < 1.3);
   assert.ok(main.digitalCrop > 2);
   assert.match(main.notes[0], /to keep the selection centred/);
+});
+
+const NUMBERED = [{ id: '2', n: 1, kind: 'ultrawide', zoom: 0.61, nearest: 40, px: 4080 }, { id: '0', n: 2, kind: 'main', zoom: 1, nearest: 10, px: 4096 },
+  { id: '3', n: 3, kind: 'telephoto', zoom: 2.16, nearest: 2, px: 4032 }];
+
+test('rotation round trip', () => {
+  const r = { x: 0.1, y: 0.2, w: 0.3, h: 0.4 };
+  for (const rot of [0, 90, 180, 270]) assert.ok(near(cameraToView(viewToCamera(r, rot), rot), r, 1e-9), String(rot));
+});
+
+test('the lens with the most detail: telephoto for a far subject, main when it is too near for the telephoto', () => {
+  const sel = { x: 0.45, y: 0.45, w: 0.1, h: 0.1 };
+  const far = rankLenses(sel, { focus: 1, atLimit: false }, NUMBERED);
+  assert.equal(far.best.id, '3');
+  assert.deepEqual(far.lenses.map((l) => l.detailPx), [249, 410, 871]);
+  const close = rankLenses(sel, { focus: 4.25, atLimit: false }, NUMBERED);
+  assert.equal(close.best.id, '0');
+  assert.match(close.lenses.find((l) => l.id === '3').why, /focuses from 50 cm/);
+  // Measured with the telephoto at its limit: only lenses that focus nearer qualify.
+  const limit = rankLenses(sel, { focus: 2.2, atLimit: true }, NUMBERED, NUMBERED[2]);
+  assert.equal(limit.best.id, '0');
+  // A subject at the edge does not fit the telephoto's view.
+  assert.match(rankLenses({ x: 0.05, y: 0.05, w: 0.1, h: 0.1 }, null, NUMBERED).lenses.find((l) => l.id === '3').why, /does not fit/);
+});
+
+test('framing on one lens opened on its own: no lens switching, and a hint to the better lens', async () => {
+  const cam = fakeCamera({ subject: 4.25 });
+  cam.control.zoom = async (z) => { cam.log.push(`zoom ${z}`); return null; };
+  cam.control.scan = async () => ({ focus: 2.2, ok: true }); // the telephoto stops at its nearest focus
+  const r = await frameSelection(cam, { zoom: 1 }, { x: 0.3, y: 0.3, w: 0.4, h: 0.4 }, { zoomRange: [1, 10], lenses: NUMBERED, lensId: '3', focusRange: [0, 2] });
+  assert.equal(r.lens.id, '3');
+  assert.equal(r.ranking.inUse, '3');
+  assert.equal(r.ranking.best, '0');
+  assert.match(r.notes.join(' '), /cannot focus closer than 50 cm[\s\S]*use lens 2 \(main\)/);
 });

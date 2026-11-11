@@ -17,6 +17,7 @@ scripts/build-server.sh rebuilds the jar):
   restarting it (zoom, focus, af_region, af_scan, ae_lock, awb_lock).
 - The 3A reports also give the zoom and the lens in use (logical cameras).
 - Camera ids the list hides can be opened, and list_cameras also prints hidden
-  logical multi-cameras with their lenses (zoom, nearest focus), each camera's
+  logical multi-cameras with their lenses (zoom, nearest focus, sensor width),
+  their hidden physical lenses (marked lens-of=<logical id>), each camera's
   manual focus range, AF regions and 3A locks.
 The server protocol is unchanged.

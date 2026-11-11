@@ -145,18 +145,27 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
     'POST /api/preview/live': async (body) => applyLive(body),
     // Select-and-frame: the most camera zoom that keeps the selection centred, a crop for the rest, focus on it.
     'POST /api/preview/frame': async (body) => serial(async () => {
-      const p = livePreview();
-      const result = await frameSelection(p.session, p.profile, body.selection, await capsOf(p.profile.source));
+      let p = livePreview(), reopened = false;
+      const caps = await capsOf(p.profile.source);
+      let result;
+      try { result = await frameSelection(p.session, p.profile, body.selection, caps); } catch (e) {
+        if (!e.cameraStopped) throw e;
+        // The phone dropped the camera while switching lenses (it does now and then): open it again, once.
+        await stopPreview();
+        p = await openPreview(p.profile); reopened = true;
+        result = await frameSelection(p.session, p.profile, body.selection, caps);
+      }
       p.profile = normalizeProfile({ ...p.profile, zoom: result.changes.zoom, focusRegion: result.changes.focusRegion,
         ...(result.changes.focus !== undefined && { focus: result.changes.focus }) });
-      return result;
+      return { ...result, ...(reopened && { previewId: p.id }) };
     }),
     // One autofocus scan on `region` (view coordinates), then the focus is fixed where it ended.
     'POST /api/preview/scan': async (body) => serial(async () => {
       const p = livePreview();
       const scan = await p.session.control.scan(body.region ? viewToCamera(body.region, p.profile.rotate ?? 0) : null);
       if (!scan) throw new UserError('Autofocus did not finish. Try again, or set the distance by hand.');
-      const focus = Math.round(scan.focus * 100) / 100;
+      const top = (await capsOf(p.profile.source))?.focusRange?.[1] ?? Infinity; // a lens at its nearest reports a bit past it
+      const focus = Math.min(Math.round(scan.focus * 100) / 100, top);
       await p.session.control.focus(focus);
       p.profile = normalizeProfile({ ...p.profile, focus });
       return { focus, ok: scan.ok };

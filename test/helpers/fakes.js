@@ -34,7 +34,7 @@ const frames = out === 'pipe:1' ? setInterval(() => process.stdout.write(Buffer.
 const finish = (code) => {
   if (done || c.ignoreStop) return;
   done = true; clearInterval(frames);
-  if (out !== 'pipe:1') fs.writeFileSync(out, c.output === 'partial' ? 'PARTIAL' : 'FAKEVIDEO ' + bytes + (inFormat === 'mpegts' ? ' ts=' + (tsOk ? 'ok' : 'bad') : ''));
+  if (out !== 'pipe:1' && out !== '-') fs.writeFileSync(out, c.output === 'partial' ? 'PARTIAL' : 'FAKEVIDEO ' + bytes + (inFormat === 'mpegts' ? ' ts=' + (tsOk ? 'ok' : 'bad') : ''));
   if (c.stderr) process.stderr.write(c.stderr + '\\n');
   process.stdin.destroy();
   setTimeout(() => process.exit(code ?? c.exitCode ?? 0), 20);
@@ -70,8 +70,12 @@ if (rest[0] === 'forward') {
   console.log(String(c.tunnelPort)); process.exit(0);
 }
 if (rest[0] === 'shell' && rest.includes('list_cameras=true')) {
-  console.log('[server] INFO: List of cameras:\\n    --camera-id=0    (back, 1920x1080, fps={15, 30, 60}, zoom-range=[1, 10], focus-range=[0.0, 10.0], af-regions, locks=ae+awb)\\n        - 1920x1080\\n        - 1280x720'
-    + '\\n    --camera-id=4    (back, 1920x1080, fps={15, 30, 60}, zoom-range=[0.5, 10], focus-range=[0.0, 10.0], af-regions, hidden, lenses=[0:1.0:10.0, 2:0.61:40.0, 3:2.16:2.0], locks=ae+awb)'
+  // Like the Motorola edge 40 pro: camera 0 is the main lens, 2 and 3 the ultrawide and telephoto (hidden),
+  // and hidden camera 4 switches between the three with the zoom.
+  console.log('[server] INFO: List of cameras:\\n    --camera-id=0    (back, 1920x1080, fps={15, 30, 60}, zoom-range=[1, 10], focus-range=[0.0, 10.0], af-regions, lens-of=4, locks=ae+awb)\\n        - 1920x1080\\n        - 1280x720'
+    + '\\n    --camera-id=2    (back, 1920x1080, fps={15, 30}, zoom-range=[1, 4], focus-range=[0.0, 40.0], af-regions, hidden, lens-of=4, locks=ae+awb)\\n        - 1920x1080'
+    + '\\n    --camera-id=3    (back, 1920x1080, fps={15, 30}, zoom-range=[1, 4], focus-range=[0.0, 2.0], af-regions, hidden, lens-of=4, locks=ae+awb)\\n        - 1920x1080'
+    + '\\n    --camera-id=4    (back, 1920x1080, fps={15, 30, 60}, zoom-range=[0.5, 10], focus-range=[0.0, 10.0], af-regions, hidden, lenses=[0:1.0:10.0:4096, 2:0.61:40.0:4080, 3:2.16:2.0:4032], locks=ae+awb)'
     + '\\n        - 1920x1080\\n      High speed capture (--camera-high-speed):\\n        - 1920x1080 (fps={120, 240})');
   process.exit(0);
 }
@@ -82,7 +86,9 @@ if (rest[0] === 'shell') {
   // Live commands on stdin, like agent-eye's camera server: the lens follows the zoom (telephoto from 2.2x,
   // ultrawide below 1x), and a scan ends at the subject (c.subjectFocus) unless the lens cannot focus that close.
   let zoom = 1, focus = 4, afMode = 3;
-  const lens = () => (zoom >= 2.2 ? 3 : zoom < 1 ? 2 : 0);
+  // a camera of one lens (0, 2, 3) keeps it; the switching camera (4) follows the zoom
+  const own = (rest.find((a) => a.startsWith('camera_id=')) ?? '').slice(10);
+  const lens = () => (['0', '2', '3'].includes(own) ? Number(own) : zoom >= 2.2 ? 3 : zoom < 1 ? 2 : 0);
   const say = (t) => console.log('[server] INFO: agent-eye-3a: ' + t);
   let pending = '';
   process.stdin.on('data', (d) => {
@@ -91,6 +97,10 @@ if (rest[0] === 'shell') {
       fs.appendFileSync(dir + '/commands', cmd + '\\n');
       const [name, arg] = cmd.split(/\\s+/);
       if (name === 'af_scan') { afMode = 1; focus = Math.min(c.subjectFocus ?? 4.25, lens() === 3 ? 2.2 : 10); setTimeout(() => say('scanned focus=' + focus + ' ok=true'), 30); continue; }
+      // c.dropOnce: the phone's camera service drops the camera on the first zoom, as it does now and then
+      if (name === 'zoom' && c.dropOnce && !fs.existsSync(dir + '/dropped')) {
+        fs.writeFileSync(dir + '/dropped', ''); console.log('[server] WARN: Camera disconnected'); process.exit(1);
+      }
       if (name === 'zoom') zoom = Number(arg);
       if (name === 'focus') { if (arg === 'auto') afMode = 3; else { afMode = 0; focus = Number(arg); } }
       say('done ' + cmd);

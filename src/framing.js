@@ -21,6 +21,11 @@ export function viewToCamera({ x, y, w, h }, rotate = 0) {
   }
 }
 
+/** A camera rectangle in view coordinates (agent-eye's rotation applied): the inverse of viewToCamera. */
+export function cameraToView(r, rotate = 0) {
+  return viewToCamera(r, { 90: 270, 270: 90 }[rotate] ?? rotate);
+}
+
 /** A rectangle in the view at zoom z0, in the view at zoom z1. */
 export function rezoom({ x, y, w, h }, z0, z1) {
   const k = z1 / z0;
@@ -79,6 +84,35 @@ export function planZoom(sel, z0, { zoomRange = [1, 1], lenses = null, avoid = [
 
 const cm = (d) => (d > 0 ? Math.round(100 / d) : null);
 
+/** How much a camera's 1x view is zoomed compared with the main lens: a lens opened on its own starts at its zoom. */
+export function baseZoom(caps) {
+  const own = caps.lensId != null && caps.lenses?.find((l) => l.id === caps.lensId);
+  return own ? own.zoom : 1;
+}
+
+/**
+ * Which lens shows `selEq` (camera coordinates of the main lens's 1x view) with the most detail: the pixels of
+ * its sensor across the subject, among the lenses whose view holds the subject and that can focus on it.
+ * `subject`: { focus (diopters), atLimit (the measuring lens was at its nearest focus, so the subject may be
+ * nearer) } or null when unknown. Returns the lenses with { detailPx, fits, focusOk, why } and the best one.
+ */
+export function rankLenses(selEq, subject, lenses, measuredWith = null) {
+  const ranked = (lenses ?? []).map((l) => {
+    const s = rezoom(selEq, 1, l.zoom);
+    const fits = s.x >= -0.001 && s.y >= -0.001 && s.x + s.w <= 1.001 && s.y + s.h <= 1.001;
+    let focusOk = null;
+    if (subject && l.nearest > 0) {
+      focusOk = subject.atLimit ? l.nearest > (measuredWith?.nearest ?? 0) + 0.05 : l.nearest >= subject.focus - 0.05;
+    }
+    const why = !fits ? 'the subject does not fit in its view'
+      : focusOk === false ? `it focuses from ${cm(l.nearest)} cm and the subject is nearer` : null;
+    return { id: l.id, n: l.n, kind: l.kind ?? lensName(l), zoom: l.zoom, detailPx: Math.round(selEq.w * l.zoom * (l.px || 0)), fits, focusOk, why };
+  });
+  const usable = ranked.filter((r) => !r.why);
+  const best = usable.sort((a, b) => b.detailPx - a.detailPx)[0] ?? null;
+  return { lenses: ranked.sort((a, b) => a.zoom - b.zoom), best };
+}
+
 /**
  * Frame `sel` (view at the profile's zoom) on a running phone session: zoom, autofocus scan on the
  * selection, back off from a lens that cannot focus that close, then a centred crop.
@@ -86,7 +120,9 @@ const cm = (d) => (d > 0 ? Math.round(100 / d) : null);
  */
 export async function frameSelection(session, profile, sel, caps, { onStep = () => {} } = {}) {
   const z0 = profile.zoom ?? 1, rotate = profile.rotate ?? 0;
-  const lenses = caps.lenses ?? null;
+  // Only the logical camera switches lenses with the zoom; a lens opened on its own stays itself.
+  const lenses = caps.lenses && caps.lensId == null ? caps.lenses : null;
+  const ownLens = caps.lensId != null ? caps.lenses?.find((l) => l.id === caps.lensId) : null;
   const notes = [];
   const avoid = [];
   let plan, scan;
@@ -121,9 +157,24 @@ export async function frameSelection(session, profile, sel, caps, { onStep = () 
   const crop = centeredCrop(sel, z0, plan.zoom);
   const changes = { zoom: plan.zoom, crop, focusRegion: (() => { const s = rezoom(sel, z0, plan.zoom); return { x: r4(s.x), y: r4(s.y), w: r4(s.w), h: r4(s.h) }; })() };
   if (scan) {
-    changes.focus = Math.round(scan.focus * 100) / 100;
+    // within the camera's range: a lens at its nearest focus reports a little past it (2.13 on a 2.0 lens)
+    const top = caps.focusRange?.[1] ?? Infinity;
+    changes.focus = Math.min(Math.round(scan.focus * 100) / 100, top);
     await session.control.focus(changes.focus);
     if (!scan.ok) notes.push('Autofocus could not lock on the selection: check the picture and adjust the focus by hand.');
+  }
+  // Which lens would show the subject with the most detail (the selection in the main lens's 1x view).
+  const inUse = plan.lens ?? ownLens ?? null;
+  const selEq = rezoom(viewToCamera(sel, rotate), z0 * baseZoom(caps), 1);
+  const subject = scan ? { focus: scan.focus, atLimit: !!(inUse?.nearest > 0 && scan.focus >= inUse.nearest - 0.05) } : null;
+  const ranking = caps.lenses ? rankLenses(selEq, subject, caps.lenses, inUse) : null;
+  if (ownLens && subject?.atLimit && ranking?.best && ranking.best.id !== ownLens.id) {
+    notes.push(`This lens cannot focus closer than ${cm(ownLens.nearest)} cm and the subject seems nearer: use lens ${ranking.best.n} (${ranking.best.kind}).`);
+  }
+  if (ranking?.best && inUse && ranking.best.id !== inUse.id) {
+    const cur = ranking.lenses.find((r) => r.id === inUse.id);
+    const gain = cur?.detailPx ? Math.round((ranking.best.detailPx / cur.detailPx) * 10) / 10 : null;
+    if (!gain || gain > 1.1) notes.push(`Lens ${ranking.best.n} (${ranking.best.kind}) would show it with more detail (${ranking.best.detailPx} sensor pixels across${gain ? `, ${gain}× this lens` : ''}).`);
   }
   const digital = crop.w < 1 ? Math.round(10 / crop.w) / 10 : 1;
   if (plan.limitedBy === 'centre' && digital > 1.05) {
@@ -134,5 +185,6 @@ export async function frameSelection(session, profile, sel, caps, { onStep = () 
   } else if (plan.limitedBy === 'selection') {
     notes.push('The selection is larger than the camera can show centred at its widest; the crop is shifted to fit.');
   }
-  return { changes, lens: plan.lens, digitalCrop: digital, scan: scan ?? null, notes };
+  return { changes, lens: inUse, digitalCrop: digital, scan: scan ?? null, notes,
+    ranking: ranking ? { lenses: ranking.lenses, best: ranking.best?.id ?? null, inUse: inUse?.id ?? null } : null };
 }

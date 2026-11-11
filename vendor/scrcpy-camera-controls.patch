@@ -89,7 +89,7 @@ index 26a6ba9..5ed27d9 100644
                      options.cameraTorch = Boolean.parseBoolean(value);
                      break;
 diff --git a/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java b/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
-index 4f4605e..50d4534 100644
+index 4f4605e..e15b91d 100644
 --- a/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
 +++ b/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
 @@ -1,5 +1,7 @@
@@ -100,7 +100,7 @@ index 4f4605e..50d4534 100644
  import com.genymobile.scrcpy.AndroidVersions;
  import com.genymobile.scrcpy.audio.AudioCodec;
  import com.genymobile.scrcpy.device.Device;
-@@ -137,12 +139,79 @@ public final class LogUtils {
+@@ -137,12 +139,102 @@ public final class LogUtils {
          return false;
      }
  
@@ -132,9 +132,10 @@ index 4f4605e..50d4534 100644
 +                CameraCharacteristics pc = cameraManager.getCameraCharacteristics(phys);
 +                Float scale = fovScale(pc);
 +                if (scale != null) {
-+                    // id:zoom:nearest focus in diopters (0 = fixed focus)
++                    // id:zoom:nearest focus in diopters (0 = fixed focus):sensor width in pixels
 +                    Float near = pc.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
-+                    out.add(phys + ":" + Math.round(scale / ref * 100) / 100f + ":" + (near == null ? 0f : near));
++                    Rect px = pc.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
++                    out.add(phys + ":" + Math.round(scale / ref * 100) / 100f + ":" + (near == null ? 0f : near) + ":" + (px == null ? 0 : px.width()));
 +                }
 +            } catch (Exception e) {
 +                // skip this lens
@@ -160,29 +161,51 @@ index 4f4605e..50d4534 100644
 -            String[] cameraIds = cameraManager.getCameraIdList();
 -            if (cameraIds.length == 0) {
 +            String[] listed = cameraManager.getCameraIdList();
-+            // agent-eye: also offer logical multi-cameras the list hides (they switch between the lenses)
-+            java.util.List<String> hidden = new java.util.ArrayList<>();
-+            for (int i = 0; i < 16; i++) {
++            // agent-eye: also offer the cameras the list hides: logical multi-cameras (they switch between
++            // lenses) and each of their lenses on its own. lensOf maps a lens to its logical camera.
++            java.util.Map<String, CameraCharacteristics> found = new java.util.LinkedHashMap<>();
++            for (String id : listed) {
++                found.put(id, cameraManager.getCameraCharacteristics(id));
++            }
++            for (int i = 0; i < 32; i++) {
 +                String id = String.valueOf(i);
-+                if (Arrays.asList(listed).contains(id)) {
-+                    continue;
-+                }
-+                try {
-+                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
-+                    if (isLogicalMultiCamera(c)) {
-+                        hidden.add(id);
++                if (!found.containsKey(id)) {
++                    try {
++                        found.put(id, cameraManager.getCameraCharacteristics(id));
++                    } catch (Exception e) {
++                        // no camera with this id
 +                    }
-+                } catch (Exception e) {
-+                    // no camera with this id
 +                }
 +            }
++            java.util.Map<String, String> lensOf = new java.util.HashMap<>();
++            for (java.util.Map.Entry<String, CameraCharacteristics> e : new java.util.ArrayList<>(found.entrySet())) {
++                if (isLogicalMultiCamera(e.getValue())) {
++                    for (String phys : e.getValue().getPhysicalCameraIds()) {
++                        lensOf.put(phys, e.getKey());
++                        if (!found.containsKey(phys)) {
++                            try {
++                                found.put(phys, cameraManager.getCameraCharacteristics(phys));
++                            } catch (Exception ex) {
++                                // a lens that cannot be described on its own
++                            }
++                        }
++                    }
++                }
++            }
++            java.util.List<String> hidden = new java.util.ArrayList<>();
 +            java.util.List<String> cameraIds = new java.util.ArrayList<>(Arrays.asList(listed));
-+            cameraIds.addAll(hidden);
++            for (java.util.Map.Entry<String, CameraCharacteristics> e : found.entrySet()) {
++                String id = e.getKey();
++                if (!cameraIds.contains(id) && (isLogicalMultiCamera(e.getValue()) || lensOf.containsKey(id))) {
++                    hidden.add(id);
++                    cameraIds.add(id);
++                }
++            }
 +            if (cameraIds.isEmpty()) {
                  builder.append("\n    (none)");
              } else {
                  for (String id : cameraIds) {
-@@ -186,6 +255,36 @@ public final class LogUtils {
+@@ -186,6 +278,39 @@ public final class LogUtils {
                          }
                      }
  
@@ -205,6 +228,9 @@ index 4f4605e..50d4534 100644
 +                    }
 +                    if (hidden.contains(id)) {
 +                        builder.append(", hidden");
++                    }
++                    if (lensOf.containsKey(id)) {
++                        builder.append(", lens-of=").append(lensOf.get(id));
 +                    }
 +                    String lenses = lensZooms(cameraManager, characteristics);
 +                    if (lenses != null) {

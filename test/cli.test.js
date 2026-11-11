@@ -271,3 +271,36 @@ test('`frame --region` and `focus` set zoom, crop and focus from the live phone 
   assert.equal((await cli(root, ['focus', '2.5'])).json.saved.focus, 2.5);
   assert.equal((await cli(root, ['frame', '--region', '0.5,0.5,0.6,0.6'])).code, 2, 'a region outside the picture is refused');
 });
+
+test('`frame` opens the camera again when the phone drops it while switching lenses', { timeout: 30000 }, async () => {
+  rmSync(join(fakes.dir, 'dropped'), { force: true });
+  fakes.adb({ dropOnce: true });
+  const root = fakes.project({ source: 'android:FAKE1/4', width: 1920, height: 1080, fps: 30 });
+  const f = await cli(root, ['frame', '--region', '0.45,0.44,0.1,0.12']);
+  assert.equal(f.code, 0, f.stdout + f.stderr);
+  assert.match(f.stderr, /closed the camera[\s\S]*Opening it again/);
+  assert.ok(f.json.saved.zoom > 1);
+});
+
+test('`frame --lens` frames on a chosen lens, or on the one that shows the region with the most detail', { timeout: 40000 }, async () => {
+  fakes.adb({ subjectFocus: 1 }); // 1 m away: every lens can focus on it
+  const root = fakes.project({ source: 'android:FAKE1/4', width: 1920, height: 1080, fps: 30 });
+  const plain = await cli(root, ['frame', '--region', '0.45,0.45,0.1,0.1']);
+  assert.equal(plain.code, 0, plain.stdout);
+  assert.equal(plain.json.bestLens, '3');
+  assert.deepEqual(plain.json.lenses.map((l) => l.n).sort(), [1, 2, 3]);
+  assert.equal(plain.json.lens.n, 3, 'the switching camera already zooms onto the telephoto');
+  // From the main lens's own camera, best moves to the telephoto's.
+  writeFileSync(join(root, '.agent-eye', 'config.json'), JSON.stringify({ version: 1, default: 'default',
+    profiles: { default: { source: 'android:FAKE1/0', width: 1920, height: 1080, fps: 30 } } }));
+  const best = await cli(root, ['frame', '--region', '0.45,0.45,0.1,0.1', '--lens', 'best']);
+  assert.equal(best.code, 0, best.stdout);
+  assert.equal(best.json.saved.source, 'android:FAKE1/3');
+  assert.equal(best.json.lens.n, 3);
+  const one = await cli(root, ['frame', '--region', '0.2,0.2,0.6,0.6', '--lens', '1']);
+  assert.equal(one.code, 0, one.stdout);
+  assert.equal(one.json.saved.source, 'android:FAKE1/2');
+  const auto = await cli(root, ['frame', '--region', '0.2,0.2,0.6,0.6', '--lens', 'auto']);
+  assert.equal(auto.json.saved.source, 'android:FAKE1/4');
+  assert.equal((await cli(root, ['frame', '--region', '0.4,0.4,0.2,0.2', '--lens', '9'])).code, 2);
+});

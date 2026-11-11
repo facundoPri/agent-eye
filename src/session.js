@@ -56,7 +56,7 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, w
   const port = Number(fwd.stdout.trim());
   if (fwd.code !== 0 || !port) throw new UserError(`adb forward failed: ${fwd.stderr.trim()}`, { code: 3 });
 
-  let server = null, socket = null, serverLog = '', serverExited = false, ffExited = false;
+  let server = null, socket = null, serverLog = '', serverExited = false, ffExited = false, dropped = false;
   const camera3a = camera3aCollector();
   const cleanup = async () => {
     socket?.destroy();
@@ -74,7 +74,7 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, w
       'com.genymobile.scrcpy.Server', SCRCPY_VERSION, `scid=${scidHex}`, 'log_level=info', ...androidServerOptions(profile, cameraId)],
     { stdio: ['pipe', 'pipe', 'pipe'] });
     server.stdin.on('error', () => {});
-    const onLog = (d) => { serverLog = (serverLog + d).slice(-2000); };
+    const onLog = (d) => { serverLog = (serverLog + d).slice(-2000); if (/Camera disconnected/.test(d)) dropped = true; if (process.env.AGENT_EYE_DEBUG_SERVER) process.stderr.write(`[server] ${d}`); };
     server.stdout.on('data', (d) => { onLog(d); camera3a.push(String(d)); }); server.stderr.on('data', onLog);
     server.on('error', onLog);
     server.on('close', () => { serverExited = true; wake(); });
@@ -120,22 +120,26 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, w
     const aborted = new Promise((r) => (signal?.aborted ? r() : signal?.addEventListener('abort', r, { once: true })));
     await Promise.race([camera3a.waitReady(4000, { locks: !!(profile.exposureLock || profile.whiteBalanceLock) }), interrupted, aborted]);
   }
-  return { startedAt, camera3a, control: cameraControl(server, camera3a), stopInput: async () => { socket.destroy(); endInput(); } };
+  return { startedAt, camera3a, control: cameraControl(server, camera3a, () => dropped), stopInput: async () => { socket.destroy(); endInput(); } };
 }
 
 /**
  * Live changes to a running phone camera, sent to its server's stdin (no restart, no blink).
  * Regions are in camera coordinates (see framing.js: viewToCamera).
  */
-function cameraControl(server, camera3a) {
+function cameraControl(server, camera3a, dropped = () => false) {
+  // The phone's camera service now and then drops the camera that switches lenses as it changes lens.
+  const stopped = () => Object.assign(new UserError(dropped() ? 'The phone closed the camera (it does this now and then while switching lenses).'
+    : 'The phone camera has stopped.', { code: 3 }), { cameraStopped: true });
   const send = (cmd) => {
-    if (!server.stdin.writable) throw new UserError('The phone camera has stopped.', { code: 3 });
+    if (!server.stdin.writable || dropped()) throw stopped();
     server.stdin.write(`${cmd}\n`);
   };
   const command = async (cmd, ms = 3000) => {
     const mark = camera3a.mark();
     send(cmd);
     const r = await camera3a.next((e) => (e.event === 'done' || e.event === 'failed') && e.command === cmd, ms, mark);
+    if (!r && dropped()) throw stopped();
     if (!r) throw new UserError(`The phone camera did not answer "${cmd}".`, { code: 3 });
     if (r.event === 'failed') throw new UserError(`The phone camera refused "${cmd}".`, { code: 3 });
   };
@@ -151,6 +155,7 @@ function cameraControl(server, camera3a) {
       await sleep(250);
       const after = camera3a.mark();
       const r = await camera3a.next((x) => typeof x.zoom === 'number', 1500, after);
+      if (dropped()) throw stopped();
       return r?.lens !== undefined ? String(r.lens) : null;
     },
     /** A fixed distance in diopters, or 'auto' for continuous autofocus. */
@@ -162,6 +167,7 @@ function cameraControl(server, camera3a) {
       const mark = camera3a.mark();
       send('af_scan');
       const e = await camera3a.next((x) => x.event === 'scanned', 6000, mark);
+      if (!e && dropped()) throw stopped();
       return e ? { focus: e.focus, ok: e.ok } : null;
     },
     lock: (which, on) => command(`${which === 'exposure' ? 'ae' : 'awb'}_lock ${on ? 1 : 0}`),

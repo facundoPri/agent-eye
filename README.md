@@ -63,6 +63,7 @@ agent-eye configure              browser: pick camera, resolution, fps, zoom, fr
 agent-eye configure --set JSON   no browser. JSON, @file.json or - (stdin). Validated against the camera
 agent-eye configure --update JSON   change only these fields of a profile; null removes one ({"focus": null})
 agent-eye frame --region x,y,w,h    frame that part of the picture: camera zoom, centred crop, focus on it
+    [--lens auto|best|N]            on lens N, the phone's automatic switching, or the lens with the most detail
 agent-eye focus [scan|auto|D]    scan: autofocus once (on --region) and fix it; auto; or D diopters
 agent-eye preview                browser on the saved profile, to check or adjust it
 agent-eye show                   print the saved profile
@@ -166,15 +167,31 @@ Drag over a part of the preview (or `agent-eye frame --region x,y,w,h`, in fract
 2. autofocuses once on the selection and fixes the focus there, and makes it the focus area;
 3. crops the rest digitally, centred on the selection, with the picture's proportions.
 
-The note under the zoom says how much is camera zoom and how much digital crop, and why it
-stopped where it did. Moving the camera zoom afterwards keeps the same part of the scene framed
-(the crop and focus area follow it). Zoom, focus and locks change the running camera directly:
-the preview no longer restarts (and blinks) when you move those sliders.
+**One zoom.** The page has a single Zoom slider (and the mouse wheel), measured against the main
+lens's 1× view so the same number frames the same scene on every lens. Agent Eye splits it on its
+own: as much camera zoom as keeps the center in the picture (and, with a fixed focus, stays below
+a lens that cannot focus that close), and a digital crop for the rest. The line under the slider
+shows the split, e.g. `Camera 1.87× (lens 2 · main + sensor crop 1.9×) · digital 1.6×`, and why
+the camera zoom stopped. Zoom, focus and locks change the running camera directly: the preview
+does not restart (or blink) when you move them.
 
-**Lenses.** Phones hide the camera that switches between lenses. Agent Eye offers it as
-"(back, all lenses)" (`android:<serial>/4` on the tested phone); the zoom label and the lens
-buttons (ultrawide, main, telephoto) show which lens is in use and how much of the zoom is a crop
-on that lens's sensor. On the tested Motorola edge 40 pro:
+**Lenses.** Agent Eye numbers the lenses of the back camera from the widest (lens 1, 2, 3…) from
+what the phone reports, so it works on any phone that describes its lenses (Android's
+multi-camera API), not only the tested one. `agent-eye devices` lists each lens as a camera of its
+own when the phone lets apps open it (`back, lens 3 · telephoto 2.16×`), plus the camera that
+switches between them with the zoom (`back, all lenses (automatic)`; phones hide it, Agent Eye
+finds it). In the page:
+
+- the **Lens** buttons choose: **Auto** (the phone switches with the zoom; a dot marks the lens in
+  use), or one lens, which then films alone at any zoom. The zoom and the framed spot are kept;
+- the chip under the picture always says the lens in use;
+- after a drag, the note lists the **detail by lens**: how many sensor pixels each lens would put
+  across the selection, or why it cannot (the subject does not fit, or is closer than the lens
+  can focus). When another lens is better, a **Use lens N** button switches to it and frames the
+  same spot again. `frame --lens best` does the same from the CLI; `--lens 2` or `--lens auto`
+  frames on that camera.
+
+On the tested Motorola edge 40 pro:
 
 - the main lens focuses from 10 cm, the ultrawide from 2.5 cm, the **telephoto only from 50 cm**,
   and it reports "focused" even when the subject is nearer. Framing a closer subject therefore
@@ -233,7 +250,7 @@ npm test
 
 The tests use fake `ffmpeg`, `ffprobe` and `adb` programs and a fake phone tunnel (see
 `test/helpers/fakes.js`); they never open a camera. Real capture still needs checking by hand on
-the hardware listed above.
+the hardware listed above. `AGENT_EYE_DEBUG_SERVER=1` prints the phone camera server's log.
 
 `vendor/scrcpy-server-v4.1-agent-eye.jar` is the scrcpy 4.1 server (Apache-2.0) with
 `vendor/scrcpy-camera-controls.patch` applied: manual focus, exposure and white balance locks, and

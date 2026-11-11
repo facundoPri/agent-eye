@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAdbDevices, parseAndroidCameras, parseAvfoundationDevices, parseAvfoundationModes } from '../src/devices.js';
+import { cameraLabel, groupLenses, parseAdbDevices, parseAndroidCameras, parseAvfoundationDevices, parseAvfoundationModes } from '../src/devices.js';
 import { androidProblems } from '../src/validate.js';
 
 const CAMERAS = `[server] INFO: List of cameras:
@@ -80,8 +80,33 @@ test('a hidden logical camera: its lenses, AF regions, and no slow motion it can
         - 1920x1080 (fps={120, 240})
 `);
   assert.equal(cam.hidden, true); assert.equal(cam.afRegions, true);
-  assert.deepEqual(cam.lenses, [{ id: '0', zoom: 1, nearest: 10 }, { id: '2', zoom: 0.61, nearest: 40 }, { id: '3', zoom: 2.16, nearest: 2 }]);
+  assert.deepEqual(cam.lenses, [{ id: '0', zoom: 1, nearest: 10, px: 0 }, { id: '2', zoom: 0.61, nearest: 40, px: 0 }, { id: '3', zoom: 2.16, nearest: 2, px: 0 }]);
   assert.deepEqual(cam.highSpeed, []);
   assert.match(androidProblems({ width: 1920, height: 1080, fps: 240, zoom: 1 }, cam)[0], /does not support 240/);
   assert.match(androidProblems({ width: 1920, height: 1080, fps: 30, zoom: 1, focusRegion: { x: 0, y: 0, w: 1, h: 1 } }, { ...cam, afRegions: false })[0], /cannot focus on a region/);
+});
+
+const PHONE = `    --camera-id=0    (back, 4096x3072, fps={30, 60}, zoom-range=[1, 10], focus-range=[0.0, 10.0], af-regions, lens-of=4, locks=ae+awb)
+        - 1920x1080
+      High speed capture (--camera-high-speed):
+        - 1920x1080 (fps={120, 240})
+    --camera-id=1    (front, 4576x3296, fps={30}, zoom-range=[1, 10], locks=ae+awb)
+        - 1920x1080
+    --camera-id=2    (back, 4080x3072, fps={30, 60}, zoom-range=[1, 10], focus-range=[0.0, 40.0], af-regions, hidden, lens-of=4, locks=ae+awb)
+        - 1920x1080
+    --camera-id=3    (back, 4032x3024, fps={30, 60}, zoom-range=[1, 10], focus-range=[0.0, 2.0], af-regions, hidden, lens-of=4, locks=ae+awb)
+        - 1920x1080
+    --camera-id=4    (back, 4096x3072, fps={30, 60}, zoom-range=[0.5, 10], focus-range=[0.0, 10.0], af-regions, hidden, lenses=[0:1.0:10.0:4096, 2:0.61:40.0:4080, 3:2.16:2.0:4032], locks=ae+awb)
+        - 1920x1080
+`;
+
+test('lenses are numbered by zoom and every camera of the group knows them and which one it is', () => {
+  const cams = groupLenses(parseAndroidCameras(PHONE));
+  const byId = Object.fromEntries(cams.map((c) => [c.id, c]));
+  assert.deepEqual(byId[4].lenses.map((l) => [l.n, l.id, l.kind]), [[1, '2', 'ultrawide'], [2, '0', 'main'], [3, '3', 'telephoto']]);
+  assert.equal(byId[4].lensId, null);
+  assert.equal(byId[3].lensId, '3'); assert.equal(byId[0].lensId, '0');
+  assert.equal(byId[1].lenses, null);
+  assert.deepEqual(cams.map(cameraLabel), ['back, lens 2 · main 1×', 'front', 'back, lens 1 · ultrawide 0.61×', 'back, lens 3 · telephoto 2.16×', 'back, all lenses (automatic)']);
+  assert.deepEqual(byId[0].highSpeed.map((h) => h.size), ['1920x1080'], 'the listed main camera keeps its slow motion');
 });
