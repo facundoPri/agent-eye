@@ -10,6 +10,7 @@ import { previewOutputArgs } from './ffargs.js';
 import { JpegSplitter } from './mjpeg.js';
 import { startSession } from './session.js';
 import { cropJpeg } from './capture.js';
+import { frameSelection, viewToCamera } from './framing.js';
 import { UserError } from './util.js';
 import { installSkill, skillStatus } from './skill.js';
 
@@ -95,8 +96,44 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
   /** Where the phone lens is focused right now (diopters) and whether the locks are on; null for Mac cameras. */
   const liveCamera = (p) => {
     const r = p.session.camera3a?.latest();
-    return r ? { focus: r.focus ?? null, autofocus: r.af_mode !== 0, aeLock: r.ae_lock === true, awbLock: r.awb_lock === true } : null;
+    return r ? { focus: r.focus ?? null, autofocus: r.af_mode !== 0, aeLock: r.ae_lock === true, awbLock: r.awb_lock === true,
+      zoom: r.zoom ?? null, lens: r.lens !== undefined ? String(r.lens) : null } : null;
   };
+
+  /** The running phone preview, for changes made without restarting it. */
+  const livePreview = () => {
+    if (!preview?.session.control) throw conflict('No phone preview is running.');
+    return preview;
+  };
+  const capsOf = async (source) => {
+    if (!deviceCache) deviceCache = await listDevices({ capabilities: true });
+    const dev = deviceCache.devices.find((d) => d.id === source);
+    if (!dev?.caps) throw new UserError(`Camera ${source} is not connected.`);
+    return dev.caps;
+  };
+
+  /** Zoom, focus, focus region and locks changed on the running camera; the preview's profile follows. */
+  const applyLive = (body) => serial(async () => {
+    const p = livePreview();
+    const c = p.session.control;
+    const next = { ...p.profile };
+    if (body.zoom !== undefined) { await c.zoom(body.zoom); next.zoom = body.zoom; }
+    if (body.focusRegion !== undefined) {
+      await c.region(body.focusRegion ? viewToCamera(body.focusRegion, next.rotate ?? 0) : null);
+      if (body.focusRegion) next.focusRegion = body.focusRegion; else delete next.focusRegion;
+    }
+    if (body.focus !== undefined) {
+      await c.focus(body.focus === 'auto' ? 'auto' : body.focus);
+      if (body.focus === 'auto') delete next.focus; else next.focus = body.focus;
+    }
+    for (const [k, which] of [['exposureLock', 'exposure'], ['whiteBalanceLock', 'whiteBalance']]) {
+      if (body[k] === undefined) continue;
+      await c.lock(which, body[k]);
+      if (body[k]) next[k] = true; else delete next[k];
+    }
+    p.profile = normalizeProfile(next);
+    return { ok: true, profile: p.profile };
+  });
 
   const route = {
     'GET /api/state': async () => ({ mode, configPath, config: cfg, profileName: profileName ?? cfg.default ?? null,
@@ -105,6 +142,25 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
     'POST /api/mac-modes': async (body) => ({ modes: await macCameraModes(await resolveMacIndex(body.source)) }),
     'POST /api/preview/start': async (body) => { const s = await startPreview(body.profile); return { id: s.id }; },
     'POST /api/preview/stop': async () => { await stopRequested(); return { ok: true }; },
+    'POST /api/preview/live': async (body) => applyLive(body),
+    // Select-and-frame: the most camera zoom that keeps the selection centred, a crop for the rest, focus on it.
+    'POST /api/preview/frame': async (body) => serial(async () => {
+      const p = livePreview();
+      const result = await frameSelection(p.session, p.profile, body.selection, await capsOf(p.profile.source));
+      p.profile = normalizeProfile({ ...p.profile, zoom: result.changes.zoom, focusRegion: result.changes.focusRegion,
+        ...(result.changes.focus !== undefined && { focus: result.changes.focus }) });
+      return result;
+    }),
+    // One autofocus scan on `region` (view coordinates), then the focus is fixed where it ended.
+    'POST /api/preview/scan': async (body) => serial(async () => {
+      const p = livePreview();
+      const scan = await p.session.control.scan(body.region ? viewToCamera(body.region, p.profile.rotate ?? 0) : null);
+      if (!scan) throw new UserError('Autofocus did not finish. Try again, or set the distance by hand.');
+      const focus = Math.round(scan.focus * 100) / 100;
+      await p.session.control.focus(focus);
+      p.profile = normalizeProfile({ ...p.profile, focus });
+      return { focus, ok: scan.ok };
+    }),
     'GET /api/preview/stats': async () => preview ? { id: preview.id, frames: preview.frames, sinceMs: Date.now() - preview.startedAt,
       fps: preview.frames / Math.max((Date.now() - preview.startedAt) / 1000, 0.001), camera: liveCamera(preview) } : { id: null, frames: 0, fps: 0 },
     'POST /api/save': async (body) => {

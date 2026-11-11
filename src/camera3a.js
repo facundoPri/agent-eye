@@ -20,6 +20,10 @@ export function parse3aLine(line) {
   if (i < 0) return null;
   const rest = line.slice(i + PREFIX.length).trim();
   if (rest.startsWith('locked ')) return { event: 'locked' };
+  const scanned = rest.match(/^scanned focus=(\S+) ok=(\w+)/);
+  if (scanned) return { event: 'scanned', focus: Number(scanned[1]), ok: scanned[2] === 'true' };
+  const done = rest.match(/^(done|failed) (.*)$/);
+  if (done) return { event: done[1], command: done[2] };
   if (rest.startsWith('set ')) return { event: 'set' };
   const unsupported = rest.match(/^unsupported=(\w+)/);
   if (unsupported) return { event: 'unsupported', what: unsupported[1] };
@@ -31,11 +35,11 @@ export function parse3aLine(line) {
 /** Collects 3A lines from the server's output (chunks may split lines), stamped with the host clock. */
 export function camera3aCollector(now = Date.now) {
   let pending = '';
-  const reports = [], unsupported = new Set();
+  const reports = [], unsupported = new Set(), events = [];
   let lockedAtMs = null;
   const waiters = new Set(); // { test, done }
   return {
-    reports, unsupported,
+    reports, unsupported, events,
     get lockedAtMs() { return lockedAtMs; },
     push(chunk) {
       const lines = (pending + chunk).split('\n');
@@ -46,6 +50,7 @@ export function camera3aCollector(now = Date.now) {
         if (p.report) reports.push({ atMs: now(), ...p.report });
         else if (p.event === 'unsupported') unsupported.add(p.what);
         else if (p.event === 'locked') lockedAtMs ??= now();
+        if (p.event) events.push({ atMs: now(), ...p });
         for (const w of waiters) if (w.test()) w.done(true);
       }
     },
@@ -66,6 +71,18 @@ export function camera3aCollector(now = Date.now) {
       });
     },
     latest: () => reports.at(-1) ?? null,
+    /** Resolves with the first report or event (after `since` items of each) matching `test`, or null after `ms`. */
+    next(test, ms, since = { reports: reports.length, events: events.length }) {
+      const find = () => events.slice(since.events).find(test) ?? reports.slice(since.reports).find(test);
+      const hit = find();
+      if (hit) return Promise.resolve(hit);
+      return new Promise((resolve) => {
+        const w = { test: () => !!find(), done: () => { clearTimeout(t); waiters.delete(w); resolve(find() ?? null); } };
+        const t = setTimeout(w.done, ms);
+        waiters.add(w);
+      });
+    },
+    mark: () => ({ reports: reports.length, events: events.length }),
   };
 }
 

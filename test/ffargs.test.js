@@ -81,3 +81,9 @@ test('focus and locks reach the camera server only when set; 3A reports are alwa
   const o = androidServerOptions({ ...android, focus: 0, exposureLock: true, whiteBalanceLock: true }, 0);
   assert.ok(o.includes('camera_focus=0') && o.includes('camera_ae_lock=true') && o.includes('camera_awb_lock=true'));
 });
+
+test('the focus region reaches the camera in its own (unrotated) coordinates; live commands are on', () => {
+  const o = androidServerOptions({ ...android, rotate: 90, focusRegion: { x: 0.8, y: 0.1, w: 0.2, h: 0.3 } }, 0);
+  assert.ok(o.includes('camera_commands=true'));
+  assert.ok(o.includes('camera_af_region=0.1,0,0.3,0.2'), o.join(' '));
+});

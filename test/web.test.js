@@ -36,7 +36,8 @@ function element(tag, attrs) {
 }
 
 const DEVICE = { id: 'android:FAKE1/0', kind: 'android', name: 'Fake (back)',
-  caps: { sizes: ['1920x1080', '1280x720'], fps: [15, 30, 60], highSpeed: [{ size: '1280x720', fps: [120, 240] }], zoomRange: [1, 8], focusRange: [0, 10], locks: ['ae', 'awb'] } };
+  caps: { sizes: ['1920x1080', '1280x720'], fps: [15, 30, 60], highSpeed: [{ size: '1280x720', fps: [120, 240] }], zoomRange: [0.5, 8], focusRange: [0, 10], locks: ['ae', 'awb'], afRegions: true,
+    lenses: [{ id: '0', zoom: 1, nearest: 10 }, { id: '2', zoom: 0.61, nearest: 40 }, { id: '3', zoom: 2.16, nearest: 2 }] } };
 
 /** Load the page with `saved` as the current profile; returns { page, saves, $ }. */
 async function openPage(saved) {
@@ -48,7 +49,7 @@ async function openPage(saved) {
   for (const m of HTML.matchAll(/<select id="(\w+)">([\s\S]*?)<\/select>/g)) {
     for (const o of m[2].matchAll(/<option value="([^"]*)">/g)) els[m[1]].appendChild({ value: o[1] });
   }
-  const saves = [], starts = [], calls = [], ticks = [], docListeners = {};
+  const saves = [], starts = [], calls = [], ticks = [], docListeners = {}, winListeners = {}, lives = [], bodies = {};
   const server = { previewId: 'p1', startError: null, saveError: null, camera: null }; // what /api/preview/stats reports, and failures to inject
   const fail = (status, error) => { throw Object.assign(new Error(error), { status }); };
   const replies = {
@@ -58,26 +59,29 @@ async function openPage(saved) {
     'POST /api/preview/stop': () => ({ ok: true }),
     'POST /api/done': () => ({ ok: true }),
     'GET /api/preview/stats': () => ({ id: server.previewId, frames: 5, fps: 15, camera: server.camera }),
+    'POST /api/preview/live': (b) => { lives.push(b); return { ok: true }; },
+    'POST /api/preview/scan': () => ({ focus: 4.26, ok: true }),
+    'POST /api/preview/frame': () => server.frameReply,
     'POST /api/save': (b) => { if (server.saveError) fail(409, server.saveError); saves.push(b); return { name: b.name, configPath: '/p/.agent-eye/config.json' }; },
     'GET /api/skill': () => ({ targets: [], upToDate: true, installed: true, projectRoot: '/p' }),
   };
   const fetch = async (path, init) => {
     const body = init.body ? JSON.parse(init.body) : undefined;
     const reply = replies[`${init.method} ${path}`];
-    calls.push(path);
+    calls.push(path); bodies[path] = body;
     try { const out = reply ? reply(body) : { error: 'nope' }; return { ok: !!reply, status: reply ? 200 : 404, json: async () => out }; }
     catch (e) { return { ok: false, status: e.status, json: async () => ({ error: e.message }) }; }
   };
   const page = vm.createContext({
     fetch, console, Date, Math, JSON, Number, String, Set, Promise,
-    setTimeout: () => 0, clearTimeout: () => {}, setInterval: (fn) => ticks.push(fn), addEventListener: () => {},
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: (fn) => ticks.push(fn), addEventListener: (type, fn) => { winListeners[type] = fn; },
     document: { hidden: false, body: {}, getElementById: (id) => els[id], createElement: (t) => element(t, {}),
       addEventListener: (type, fn) => { docListeners[type] = fn; } },
   });
   vm.runInContext(HTML.match(/<script>([\s\S]*)<\/script>/)[1], page);
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   const confirm = async () => { await els.save.onclick(); return saves.at(-1).profile; };
-  return { page, els, confirm, starts, calls, ticks, server, docListeners };
+  return { page, els, confirm, starts, calls, ticks, server, docListeners, winListeners, lives, bodies };
 }
 
 const base = { source: DEVICE.id, width: 1920, height: 1080, fps: 30, zoom: 1, crop: { x: 0, y: 0, w: 1, h: 1 }, rotate: 0 };
@@ -179,18 +183,75 @@ test('a fixed focus and 3A locks round-trip', async () => {
   assert.deepEqual(await confirm(), saved);
 });
 
-test('"Fix focus here" fixes the focus where autofocus has it in the preview', async () => {
-  const { page, els, confirm, ticks, server } = await openPage(base);
-  assert.equal(els.focusHere.disabled, true, 'nothing to fix before the preview reports a focus');
-  vm.runInContext('previewId = "p1"', page);
-  server.camera = { focus: 4.255319, autofocus: true, aeLock: false, awbLock: false };
-  for (const tick of ticks) await tick();
-  assert.match(els.focusStat.textContent, /Focus 24 cm · auto/);
+test('"Focus on frame" scans the focus area and fixes the focus there', async () => {
+  const { page, els, confirm, bodies } = await openPage({ ...base, focusRegion: { x: 0.4, y: 0.4, w: 0.2, h: 0.2 } });
+  vm.runInContext('previewId = "p1"; updateLens()', page);
   assert.equal(els.focusHere.disabled, false);
-  els.focusHere.onclick();
+  await els.focusHere.onclick();
+  assert.deepEqual(bodies['/api/preview/scan'], { region: { x: 0.4, y: 0.4, w: 0.2, h: 0.2 } });
   assert.equal(els.focusMode.value, 'fixed');
-  assert.match(els.focusV.textContent, /23 cm \(4.26 D\)/);
-  assert.equal((await confirm()).focus, 4.26);
-  els.focusMode.value = 'auto'; els.focusMode.onchange();
-  assert.equal('focus' in (await confirm()), false);
+  assert.match(els.frameNote.textContent, /Focus fixed at 23 cm/);
+  const p = await confirm();
+  assert.equal(p.focus, 4.26);
+  assert.deepEqual(p.focusRegion, { x: 0.4, y: 0.4, w: 0.2, h: 0.2 });
+});
+
+test('zoom, focus and locks change the running camera live, without restarting it', async () => {
+  const { page, els, starts, lives } = await openPage(base);
+  vm.runInContext('previewId = "p1"', page);
+  els.zoom.value = 2.5; els.zoom.oninput();
+  els.focusMode.value = 'fixed'; els.focus.value = 3; els.focus.oninput();
+  els.aeLock.checked = true; els.aeLock.oninput();
+  for (let i = 0; i < 5; i++) await settle();
+  assert.equal(starts.length, 0, 'no restart, so no blink');
+  const sent = Object.assign({}, ...lives);
+  assert.equal(sent.zoom, 2.5); assert.equal(sent.focus, 3); assert.equal(sent.exposureLock, true);
+});
+
+test('the zoom label says which lens is used and how much is a crop on its sensor', async () => {
+  const { page, els } = await openPage(base);
+  els.zoom.value = 1; els.zoom.oninput();
+  assert.match(els.zoomV.textContent, /1.00× · main \(optical\)/);
+  els.zoom.value = 1.8; els.zoom.oninput();
+  assert.match(els.zoomV.textContent, /1.80× · main \+ sensor crop 1.8×/);
+  vm.runInContext('liveLens = "3"', page); els.zoom.value = 4.32; els.zoom.oninput();
+  assert.match(els.zoomV.textContent, /4.32× · telephoto \+ sensor crop 2.0×/);
+  assert.deepEqual(els.lensBar.options.map((b) => b.textContent), ['ultrawide 0.5×', 'main 1×', 'telephoto 2.21×']);
+});
+
+test('camera zoom keeps the framed part of the scene: the crop and focus area follow it', async () => {
+  const { els, confirm } = await openPage({ ...base, crop: { x: 0.375, y: 0.375, w: 0.25, h: 0.25 }, focusRegion: { x: 0.45, y: 0.45, w: 0.1, h: 0.1 } });
+  els.zoom.value = 2; els.zoom.oninput();
+  const p = await confirm();
+  assert.deepEqual(p.crop, { x: 0.25, y: 0.25, w: 0.5, h: 0.5 });
+  assert.deepEqual(p.focusRegion, { x: 0.4, y: 0.4, w: 0.2, h: 0.2 });
+});
+
+test('dragging on the preview frames the selection with the camera zoom, a crop and the focus', async () => {
+  const { page, els, winListeners, bodies, server, confirm } = await openPage(base);
+  vm.runInContext('previewId = "p1"', page);
+  server.frameReply = { changes: { zoom: 1.91, crop: { x: 0.3716, y: 0.3716, w: 0.2567, h: 0.2567 }, focusRegion: { x: 0.4, y: 0.39, w: 0.19, h: 0.23 }, focus: 4.26 },
+    lens: { id: '0', zoom: 1, nearest: 10 }, digitalCrop: 3.9, notes: ['The telephoto lens cannot focus closer than 50 cm…'] };
+  const ev = (x, y) => ({ button: 0, clientX: x, clientY: y, preventDefault() {} });
+  for (const fn of els.view.listeners.mousedown) fn(ev(450, 264));
+  winListeners.mousemove(ev(550, 336));
+  assert.equal(els.sel.style.display, 'block');
+  await winListeners.mouseup();
+  for (let i = 0; i < 5; i++) await settle();
+  assert.deepEqual(bodies['/api/preview/frame'], { selection: { x: 0.45, y: 0.44, w: 0.1, h: 0.12 } });
+  assert.match(els.frameNote.textContent, /Camera zoom 1.91× · main \+ sensor crop 1.9×, digital crop 3.9×, focus 23 cm[\s\S]*telephoto/);
+  for (const fn of els.view.listeners.click) fn(ev(550, 336)); // the click that ends a drag does not re-center
+  const p = await confirm();
+  assert.equal(p.zoom, 1.91); assert.equal(p.focus, 4.26);
+  assert.deepEqual(p.crop, { x: 0.3716, y: 0.3716, w: 0.2567, h: 0.2567 });
+  assert.deepEqual(p.focusRegion, { x: 0.4, y: 0.39, w: 0.19, h: 0.23 });
+});
+
+test('a warning appears when the lens in use cannot focus as close as the fixed focus', async () => {
+  const { page, els } = await openPage({ ...base, focus: 3.7 });
+  assert.equal(els.lensWarn.textContent, '');
+  vm.runInContext('liveLens = "3"', page); els.zoom.value = 2.21; els.zoom.oninput();
+  assert.match(els.lensWarn.textContent, /telephoto lens cannot focus closer than 50 cm, and the focus is set to 27 cm/);
+  vm.runInContext('liveLens = "0"', page); els.zoom.value = 1; els.zoom.oninput();
+  assert.equal(els.lensWarn.textContent, '');
 });

@@ -61,6 +61,9 @@ agent-eye doctor                 tools, permissions, cameras
 agent-eye devices [--caps]       list cameras (and what each supports)
 agent-eye configure              browser: pick camera, resolution, fps, zoom, framing; Confirm saves
 agent-eye configure --set JSON   no browser. JSON, @file.json or - (stdin). Validated against the camera
+agent-eye configure --update JSON   change only these fields of a profile; null removes one ({"focus": null})
+agent-eye frame --region x,y,w,h    frame that part of the picture: camera zoom, centred crop, focus on it
+agent-eye focus [scan|auto|D]    scan: autofocus once (on --region) and fix it; auto; or D diopters
 agent-eye preview                browser on the saved profile, to check or adjust it
 agent-eye show                   print the saved profile
 agent-eye snapshot --out a.jpg   full-resolution still with the saved framing (lets an agent look)
@@ -112,6 +115,7 @@ the framing.
   "rotate": 0,
   "bitrate": 30,
   "focus": 4.25,
+  "focusRegion": { "x": 0.4, "y": 0.4, "w": 0.2, "h": 0.2 },
   "exposureLock": true,
   "whiteBalanceLock": true
 }
@@ -123,6 +127,8 @@ the framing.
 - `bitrate`: Mbit/s. Default 20, or 40 above 60 fps.
 - `focus` (optional, Android): a fixed focus distance in diopters, 1/metres (4 = 25 cm, 0 =
   infinity). Absent or `"auto"`: continuous autofocus.
+- `focusRegion` (optional, Android): where autofocus looks, and where a focus scan measures; like
+  `crop`, fractions of the frame before the crop.
 - `exposureLock`, `whiteBalanceLock` (optional, Android): lock them once the camera has metered
   the scene. Absent: automatic.
 
@@ -133,9 +139,11 @@ its camera app. That is fine for watching, but bad for measuring: when the scene
 screen flashing), autofocus searches again and blurs frames, and exposure shifts the brightness of
 the whole frame for 1-2 s.
 
-To keep them still, open `agent-eye preview`, let autofocus find the subject, press **Fix focus
-here** (or pick Focus: Fixed distance and set it), tick **Lock exposure** / **Lock white
-balance**, and confirm. From the terminal: `agent-eye configure --set '{"focus": 4.25, ...}'`.
+To keep them still, open `agent-eye preview`, drag over the subject (see **Framing a
+selection**) or press **Focus on frame**, tick **Lock exposure** / **Lock white balance**, and
+confirm. From the terminal: `agent-eye focus scan --region x,y,w,h` (autofocus once on that part
+of the picture and fix it there), `agent-eye focus 4.25`, `agent-eye focus auto`, or
+`agent-eye configure --update '{"exposureLock": true}'`.
 `agent-eye devices --caps` shows each camera's `focusRange` and `locks`; a profile asking for
 something the camera cannot do is refused. On the tested phone (Motorola edge 40 pro, back camera)
 fixed focus and both locks hold at 30, 60, 120 and 240 fps.
@@ -146,6 +154,37 @@ fixed focus and both locks hold at 30, 60, 120 and 240 fps.
   as started only once focus has settled and the locks are on, so what happens after `start`
   returns is filmed in focus; the file itself begins with that search (`camera.focus.settledAtMs`,
   host clock, says when it ended).
+
+### Framing a selection
+
+Drag over a part of the preview (or `agent-eye frame --region x,y,w,h`, in fractions of what
+`snapshot` shows) and Agent Eye:
+
+1. zooms the **phone's camera** as far as it can while keeping the selection centred (the phone's
+   zoom is centred on the sensor, so an off-centre subject limits it), because the phone's zoom
+   crops the full sensor and keeps more detail than a crop of the recorded picture;
+2. autofocuses once on the selection and fixes the focus there, and makes it the focus area;
+3. crops the rest digitally, centred on the selection, with the picture's proportions.
+
+The note under the zoom says how much is camera zoom and how much digital crop, and why it
+stopped where it did. Moving the camera zoom afterwards keeps the same part of the scene framed
+(the crop and focus area follow it). Zoom, focus and locks change the running camera directly:
+the preview no longer restarts (and blinks) when you move those sliders.
+
+**Lenses.** Phones hide the camera that switches between lenses. Agent Eye offers it as
+"(back, all lenses)" (`android:<serial>/4` on the tested phone); the zoom label and the lens
+buttons (ultrawide, main, telephoto) show which lens is in use and how much of the zoom is a crop
+on that lens's sensor. On the tested Motorola edge 40 pro:
+
+- the main lens focuses from 10 cm, the ultrawide from 2.5 cm, the **telephoto only from 50 cm**,
+  and it reports "focused" even when the subject is nearer. Framing a closer subject therefore
+  stays on the main lens (below about 2×) and says so; the page warns when the lens in use cannot
+  reach the focus distance;
+- the camera switches lenses on its own, with hysteresis (telephoto from about 2.2× going up,
+  until about 2.0× coming down); the label shows the lens it actually uses;
+- the all-lenses camera cannot do slow motion (every 120/240 fps mode fails), so it is offered
+  only up to 60 fps. For slow motion use the plain back camera: its zoom is a crop of the main
+  sensor, the same picture the all-lenses camera gives below 2×.
 
 A config holds several named profiles and one default, used when a command has no `--profile`.
 `configure --set JSON --name hs240` (or `--profile hs240`, or `"name": "hs240"` in the JSON)
@@ -173,7 +212,8 @@ cancels it (exit 1, nothing recorded). The worker's log is `.agent-eye/worker.lo
 - One program at a time can use a camera: preview and record are exclusive, and a phone camera
   that another app (or a scrcpy window) holds will not start.
 - The preview is 15 fps and 960 px wide whatever the recording settings are.
-- Phone zoom changes restart the preview (about a second); digital zoom is instant.
+- Changing the camera, resolution, frame rate or rotation restarts the preview (about a second);
+  zoom, focus and locks change live.
 - High frame rates depend on the phone's encoder. Check `measuredFps` in the summary; a warning
   is added when it falls under 90 % of what you asked for.
 - Without `exposureLock`, exposure on the phone is automatic: a large change in what the camera

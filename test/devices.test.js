@@ -72,3 +72,16 @@ test('validation checks focus and locks against the camera', () => {
   const f = androidProblems(p, front);
   assert.match(f[0], /no manual focus/); assert.match(f[1], /cannot lock exposure/); assert.match(f[2], /cannot lock white balance/);
 });
+
+test('a hidden logical camera: its lenses, AF regions, and no slow motion it cannot do', () => {
+  const [cam] = parseAndroidCameras(`    --camera-id=4    (back, 4096x3072, fps={10, 30, 60}, zoom-range=[0.5, 10], focus-range=[0.0, 10.0], af-regions, hidden, lenses=[0:1.0:10.0, 2:0.61:40.0, 3:2.16:2.0], locks=ae+awb)
+        - 1920x1080
+      High speed capture (--camera-high-speed):
+        - 1920x1080 (fps={120, 240})
+`);
+  assert.equal(cam.hidden, true); assert.equal(cam.afRegions, true);
+  assert.deepEqual(cam.lenses, [{ id: '0', zoom: 1, nearest: 10 }, { id: '2', zoom: 0.61, nearest: 40 }, { id: '3', zoom: 2.16, nearest: 2 }]);
+  assert.deepEqual(cam.highSpeed, []);
+  assert.match(androidProblems({ width: 1920, height: 1080, fps: 240, zoom: 1 }, cam)[0], /does not support 240/);
+  assert.match(androidProblems({ width: 1920, height: 1080, fps: 30, zoom: 1, focusRegion: { x: 0, y: 0, w: 1, h: 1 } }, { ...cam, afRegions: false })[0], /cannot focus on a region/);
+});

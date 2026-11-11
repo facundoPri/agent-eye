@@ -85,6 +85,13 @@ export function parseAndroidCameras(text) {
         // Reported by agent-eye's build of the server (see vendor/NOTICE): manual focus in diopters, and 3A locks.
         focusRange: (() => { const f = line.match(/focus-range=\[([\d.]+), ([\d.]+)\]/); return f ? [Number(f[1]), Number(f[2])] : null; })(),
         locks: line.match(/locks=([\w+]+)/)?.[1].split('+') ?? [],
+        afRegions: /, af-regions/.test(line),
+        hidden: /, hidden/.test(line),
+        // A logical camera that switches lenses with the zoom: each lens's zoom and nearest focus (diopters).
+        lenses: (() => {
+          const l = line.match(/lenses=\[([^\]]*)\]/);
+          return l ? l[1].split(',').map((t) => t.trim().split(':')).map(([id, zoom, nearest]) => ({ id, zoom: Number(zoom), nearest: Number(nearest ?? 0) })) : null;
+        })(),
         sizes: [], highSpeed: [],
       };
       cams.push(cam); highSpeed = false;
@@ -92,6 +99,9 @@ export function parseAndroidCameras(text) {
     }
     if (!cam) continue;
     if (/High speed capture/.test(line)) { highSpeed = true; continue; }
+    // A camera the phone hides (a logical multi-camera) may list slow motion it cannot do: on a Motorola
+    // edge 40 pro every high-speed mode fails with "Function not implemented". Offer it only on listed cameras.
+    if (highSpeed && cam.hidden) continue;
     const hs = highSpeed && line.match(/-\s+(\d+x\d+)\s+\(fps=\{([^}]*)\}\)/);
     if (hs) { cam.highSpeed.push({ size: hs[1], fps: hs[2].split(',').map((s) => Number(s.trim())) }); continue; }
     const sz = !highSpeed && line.match(/^\s+-\s+(\d+x\d+)\s*$/);
@@ -138,7 +148,7 @@ export async function listDevices({ capabilities = false } = {}) {
       const cams = await androidCameras(ph.serial);
       for (const c of cams) {
         devices.push({ id: `android:${ph.serial}/${c.id}`, kind: 'android', serial: ph.serial, cameraId: c.id,
-          name: `${ph.model} (${c.facing})`, ...(capabilities ? { caps: c } : { maxSize: c.maxSize, fps: c.fps, zoomRange: c.zoomRange, highSpeed: c.highSpeed, focusRange: c.focusRange, locks: c.locks }) });
+          name: `${ph.model} (${c.facing}${c.lenses ? ', all lenses' : c.hidden ? ', hidden' : ''})`, ...(capabilities ? { caps: c } : { maxSize: c.maxSize, fps: c.fps, zoomRange: c.zoomRange, highSpeed: c.highSpeed, focusRange: c.focusRange, locks: c.locks, lenses: c.lenses }) });
       }
     } catch (e) {
       problems.push({ serial: ph.serial, state: ph.state, model: ph.model, hint: e.message });

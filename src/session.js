@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { findBin, raceTimer, run, sleep, UserError } from './util.js';
 import { REMOTE_JAR, SCRCPY_VERSION, pushServer, resolveMacIndex } from './devices.js';
-import { androidServerOptions, inputArgs } from './ffargs.js';
+import { androidServerOptions, inputArgs, regionArg } from './ffargs.js';
 import { scrcpyToTs } from './mpegts.js';
 import { camera3aCollector } from './camera3a.js';
 
@@ -72,7 +72,8 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, w
   try {
     server = spawn(adb, ['-s', serial, 'shell', `CLASSPATH=${REMOTE_JAR}`, 'app_process', '/',
       'com.genymobile.scrcpy.Server', SCRCPY_VERSION, `scid=${scidHex}`, 'log_level=info', ...androidServerOptions(profile, cameraId)],
-    { stdio: ['ignore', 'pipe', 'pipe'] });
+    { stdio: ['pipe', 'pipe', 'pipe'] });
+    server.stdin.on('error', () => {});
     const onLog = (d) => { serverLog = (serverLog + d).slice(-2000); };
     server.stdout.on('data', (d) => { onLog(d); camera3a.push(String(d)); }); server.stderr.on('data', onLog);
     server.on('error', onLog);
@@ -87,8 +88,10 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, w
     }
     if (!firstChunk || signal?.aborted) {
       if (signal?.aborted) throw cancelledError();
-      const busy = /in use|already|Could not open camera|camera.*(error|fail)/i.test(serverLog);
-      const why = busy ? 'The phone camera is busy (another app or a scrcpy window is using it).'
+      const unsupported = /Error configuring streams|Function not implemented/i.test(serverLog);
+      const busy = !unsupported && /in use|already|Could not open camera|camera.*(error|fail)/i.test(serverLog);
+      const why = unsupported ? `The phone camera cannot record ${profile.width}x${profile.height} at ${profile.fps} fps (it refused the configuration).`
+        : busy ? 'The phone camera is busy (another app or a scrcpy window is using it).'
         : ffExited ? 'ffmpeg stopped while the phone camera was starting.'
           : serverExited ? 'The phone camera did not start.' : `The phone camera sent nothing within ${Math.round(startTimeoutMs / 1000)} s.`;
       throw new UserError(`${why}\n${serverLog.trim().split('\n').slice(-5).join('\n')}`.trim(), { code: 3 });
@@ -117,7 +120,52 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, w
     const aborted = new Promise((r) => (signal?.aborted ? r() : signal?.addEventListener('abort', r, { once: true })));
     await Promise.race([camera3a.waitReady(4000, { locks: !!(profile.exposureLock || profile.whiteBalanceLock) }), interrupted, aborted]);
   }
-  return { startedAt, camera3a, stopInput: async () => { socket.destroy(); endInput(); } };
+  return { startedAt, camera3a, control: cameraControl(server, camera3a), stopInput: async () => { socket.destroy(); endInput(); } };
+}
+
+/**
+ * Live changes to a running phone camera, sent to its server's stdin (no restart, no blink).
+ * Regions are in camera coordinates (see framing.js: viewToCamera).
+ */
+function cameraControl(server, camera3a) {
+  const send = (cmd) => {
+    if (!server.stdin.writable) throw new UserError('The phone camera has stopped.', { code: 3 });
+    server.stdin.write(`${cmd}\n`);
+  };
+  const command = async (cmd, ms = 3000) => {
+    const mark = camera3a.mark();
+    send(cmd);
+    const r = await camera3a.next((e) => (e.event === 'done' || e.event === 'failed') && e.command === cmd, ms, mark);
+    if (!r) throw new UserError(`The phone camera did not answer "${cmd}".`, { code: 3 });
+    if (r.event === 'failed') throw new UserError(`The phone camera refused "${cmd}".`, { code: 3 });
+  };
+  return {
+    /**
+     * Zoom, then wait for a frame taken at that zoom (and a moment for a lens switch to settle).
+     * Resolves with the lens id the camera reports using (null if it does not say).
+     */
+    async zoom(z) {
+      await command(`zoom ${z}`);
+      const mark = camera3a.mark();
+      await camera3a.next((r) => typeof r.zoom === 'number' && Math.abs(r.zoom - z) < 0.02, 2500, mark);
+      await sleep(250);
+      const after = camera3a.mark();
+      const r = await camera3a.next((x) => typeof x.zoom === 'number', 1500, after);
+      return r?.lens !== undefined ? String(r.lens) : null;
+    },
+    /** A fixed distance in diopters, or 'auto' for continuous autofocus. */
+    focus: (d) => command(`focus ${d}`),
+    region: (r) => command(r ? `af_region ${regionArg(r).replaceAll(',', ' ')}` : 'af_region none'),
+    /** One autofocus scan (on `region` when given); resolves { focus, ok }, or null if it never finished. */
+    async scan(region) {
+      if (region) await this.region(region);
+      const mark = camera3a.mark();
+      send('af_scan');
+      const e = await camera3a.next((x) => x.event === 'scanned', 6000, mark);
+      return e ? { focus: e.focus, ok: e.ok } : null;
+    },
+    lock: (which, on) => command(`${which === 'exposure' ? 'ae' : 'awb'}_lock ${on ? 1 : 0}`),
+  };
 }
 
 /**
@@ -168,5 +216,6 @@ export async function startSession(profile, outputArgs, { onStdout, signal, star
     if (!res) { ff.kill('SIGKILL'); return { ...(await closed), killed: true }; }
     return res;
   })();
-  return { stop, closed, startedAt, camera3a: android?.camera3a ?? null, explain: (r) => explainFfmpegFailure(r.stderr, profile) };
+  return { stop, closed, startedAt, camera3a: android?.camera3a ?? null, control: android?.control ?? null,
+    explain: (r) => explainFfmpegFailure(r.stderr, profile) };
 }

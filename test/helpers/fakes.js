@@ -70,15 +70,35 @@ if (rest[0] === 'forward') {
   console.log(String(c.tunnelPort)); process.exit(0);
 }
 if (rest[0] === 'shell' && rest.includes('list_cameras=true')) {
-  console.log('[server] INFO: List of cameras:\\n    --camera-id=0    (back, 1920x1080, fps={15, 30, 60})\\n        - 1920x1080\\n        - 1280x720');
+  console.log('[server] INFO: List of cameras:\\n    --camera-id=0    (back, 1920x1080, fps={15, 30, 60}, zoom-range=[1, 10], focus-range=[0.0, 10.0], af-regions, locks=ae+awb)\\n        - 1920x1080\\n        - 1280x720'
+    + '\\n    --camera-id=4    (back, 1920x1080, fps={15, 30, 60}, zoom-range=[0.5, 10], focus-range=[0.0, 10.0], af-regions, hidden, lenses=[0:1.0:10.0, 2:0.61:40.0, 3:2.16:2.0], locks=ae+awb)'
+    + '\\n        - 1920x1080\\n      High speed capture (--camera-high-speed):\\n        - 1920x1080 (fps={120, 240})');
   process.exit(0);
 }
 if (rest[0] === 'shell') {
   mark('adbserver'); console.log('[server] INFO: Device: fake');
   // c.report3a: lines the camera server prints, one every 50 ms, the last one repeated (see camera3a.js).
   // By default autofocus has already settled, as on a real phone a moment after the camera opens.
-  const lines = c.report3a ?? ['focus=4 af_mode=3 af_state=2 lens_state=0']; let i = 0;
-  setInterval(() => { if (lines.length) console.log('[server] INFO: agent-eye-3a: ' + lines[Math.min(i++, lines.length - 1)]); }, 50);
+  // Live commands on stdin, like agent-eye's camera server: the lens follows the zoom (telephoto from 2.2x,
+  // ultrawide below 1x), and a scan ends at the subject (c.subjectFocus) unless the lens cannot focus that close.
+  let zoom = 1, focus = 4, afMode = 3;
+  const lens = () => (zoom >= 2.2 ? 3 : zoom < 1 ? 2 : 0);
+  const say = (t) => console.log('[server] INFO: agent-eye-3a: ' + t);
+  let pending = '';
+  process.stdin.on('data', (d) => {
+    const ls = (pending + d).split('\\n'); pending = ls.pop();
+    for (const cmd of ls.map((l) => l.trim()).filter(Boolean)) {
+      fs.appendFileSync(dir + '/commands', cmd + '\\n');
+      const [name, arg] = cmd.split(/\\s+/);
+      if (name === 'af_scan') { afMode = 1; focus = Math.min(c.subjectFocus ?? 4.25, lens() === 3 ? 2.2 : 10); setTimeout(() => say('scanned focus=' + focus + ' ok=true'), 30); continue; }
+      if (name === 'zoom') zoom = Number(arg);
+      if (name === 'focus') { if (arg === 'auto') afMode = 3; else { afMode = 0; focus = Number(arg); } }
+      say('done ' + cmd);
+    }
+  });
+  const lines = c.report3a ?? null; let i = 0;
+  setInterval(() => say(lines ? lines[Math.min(i++, lines.length - 1)]
+    : 'focus=' + focus + ' af_mode=' + afMode + ' af_state=2 lens_state=0 zoom=' + zoom + ' lens=' + lens()), 50);
   return;
 }
 process.exit(1);

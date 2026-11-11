@@ -17,6 +17,7 @@ export function androidProblems(profile, caps) {
     if (!caps.focusRange) problems.push('this camera has no manual focus: remove "focus" (autofocus).');
     else if (profile.focus > caps.focusRange[1]) problems.push(`focus ${profile.focus} is closer than this camera can focus (0-${caps.focusRange[1]} diopters, nearest ${Math.round(100 / caps.focusRange[1])} cm).`);
   }
+  if (profile.focusRegion && !caps.afRegions) problems.push('this camera cannot focus on a region: remove "focusRegion".');
   const locks = caps.locks ?? [];
   if (profile.exposureLock && !locks.includes('ae')) problems.push('this camera cannot lock exposure.');
   if (profile.whiteBalanceLock && !locks.includes('awb')) problems.push('this camera cannot lock white balance.');

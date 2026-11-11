@@ -1,5 +1,6 @@
 // Pure builders for ffmpeg arguments. No process is spawned here, so they are unit-testable.
 import { FULL_CROP } from './config.js';
+import { viewToCamera } from './framing.js';
 
 const even = (expr) => `trunc(${expr}/2)*2`;
 
@@ -62,15 +63,24 @@ export function androidServerOptions(profile, cameraId) {
     'audio=false', 'control=false', 'tunnel_forward=true',
     // Bare packets, each with its 12-byte header (capture PTS + size): send_frame_meta is what raw_stream turns off.
     'send_device_meta=false', 'send_dummy_byte=false', 'send_stream_meta=false', 'send_frame_meta=true',
-    // One line about twice a second with what focus, exposure and white balance actually did (see camera3a.js).
-    'camera_3a_report=true',
+    // One line about twice a second with what focus, exposure and white balance actually did (see camera3a.js),
+    // and commands on stdin to change zoom, focus and locks without restarting the camera (session.control).
+    'camera_3a_report=true', 'camera_commands=true',
   ];
   if (profile.zoom > 1) opts.push(`camera_zoom=${profile.zoom}`);
   if (profile.focus !== undefined) opts.push(`camera_focus=${profile.focus}`);
+  if (profile.focusRegion) opts.push(`camera_af_region=${regionArg(viewToCamera(profile.focusRegion, profile.rotate ?? 0))}`);
   // Locks engage 1.5 s after the camera starts, once auto exposure and white balance have settled on the scene.
   if (profile.exposureLock) opts.push('camera_ae_lock=true');
   if (profile.whiteBalanceLock) opts.push('camera_awb_lock=true');
   if (profile.fps > 60) opts.push('camera_high_speed=true');
   if (profile.fps > 120) opts.push(`video_codec_options=operating-rate:int=${Math.round(profile.fps * 2)},priority:int=0`);
   return opts;
+}
+
+/** A rectangle for the camera server: x,y,w,h kept inside the picture. */
+export function regionArg({ x, y, w, h }) {
+  const c = (v) => Math.round(Math.min(Math.max(v, 0), 1) * 10000) / 10000;
+  const x0 = c(x), y0 = c(y);
+  return [x0, y0, c(Math.min(w, 1 - x0)), c(Math.min(h, 1 - y0))].join(',');
 }

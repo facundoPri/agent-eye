@@ -1,8 +1,8 @@
 diff --git a/server/src/main/java/com/genymobile/scrcpy/Options.java b/server/src/main/java/com/genymobile/scrcpy/Options.java
-index 26a6ba9..3135b7a 100644
+index 26a6ba9..5ed27d9 100644
 --- a/server/src/main/java/com/genymobile/scrcpy/Options.java
 +++ b/server/src/main/java/com/genymobile/scrcpy/Options.java
-@@ -49,6 +49,12 @@ public class Options {
+@@ -49,6 +49,14 @@ public class Options {
      private int cameraFps;
      private boolean cameraHighSpeed;
      private boolean cameraTorch;
@@ -12,10 +12,12 @@ index 26a6ba9..3135b7a 100644
 +    private boolean cameraAwbLock;
 +    private int cameraLockDelayMs = 1500;
 +    private boolean camera3aReport;
++    private float[] cameraAfRegion;
++    private boolean cameraCommands;
      private boolean showTouches;
      private boolean stayAwake;
      private int screenOffTimeout = -1;
-@@ -195,6 +201,26 @@ public class Options {
+@@ -195,6 +203,34 @@ public class Options {
          return cameraTorch;
      }
  
@@ -39,10 +41,18 @@ index 26a6ba9..3135b7a 100644
 +        return camera3aReport;
 +    }
 +
++    public float[] getCameraAfRegion() {
++        return cameraAfRegion;
++    }
++
++    public boolean getCameraCommands() {
++        return cameraCommands;
++    }
++
      public boolean getShowTouches() {
          return showTouches;
      }
-@@ -518,6 +544,21 @@ public class Options {
+@@ -518,6 +554,35 @@ public class Options {
                  case "camera_high_speed":
                      options.cameraHighSpeed = Boolean.parseBoolean(value);
                      break;
@@ -58,6 +68,20 @@ index 26a6ba9..3135b7a 100644
 +                case "camera_lock_delay_ms":
 +                    options.cameraLockDelayMs = Integer.parseInt(value);
 +                    break;
++                case "camera_af_region": {
++                    String[] parts = value.split(",");
++                    if (parts.length != 4) {
++                        throw new IllegalArgumentException("camera_af_region must be x,y,w,h");
++                    }
++                    options.cameraAfRegion = new float[4];
++                    for (int k = 0; k < 4; k++) {
++                        options.cameraAfRegion[k] = Float.parseFloat(parts[k]);
++                    }
++                    break;
++                }
++                case "camera_commands":
++                    options.cameraCommands = Boolean.parseBoolean(value);
++                    break;
 +                case "camera_3a_report":
 +                    options.camera3aReport = Boolean.parseBoolean(value);
 +                    break;
@@ -65,10 +89,100 @@ index 26a6ba9..3135b7a 100644
                      options.cameraTorch = Boolean.parseBoolean(value);
                      break;
 diff --git a/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java b/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
-index 4f4605e..6258150 100644
+index 4f4605e..50d4534 100644
 --- a/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
 +++ b/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
-@@ -186,6 +186,24 @@ public final class LogUtils {
+@@ -1,5 +1,7 @@
+ package com.genymobile.scrcpy.util;
+ 
++import java.util.Arrays;
++
+ import com.genymobile.scrcpy.AndroidVersions;
+ import com.genymobile.scrcpy.audio.AudioCodec;
+ import com.genymobile.scrcpy.device.Device;
+@@ -137,12 +139,79 @@ public final class LogUtils {
+         return false;
+     }
+ 
++    private static boolean isLogicalMultiCamera(CameraCharacteristics c) {
++        int[] caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
++        if (caps == null) {
++            return false;
++        }
++        for (int cap : caps) {
++            if (cap == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    /** agent-eye: for a logical multi-camera, each lens as id:zoom, the zoom ratio its field of view matches (approximate). */
++    private static String lensZooms(CameraManager cameraManager, CameraCharacteristics logical) {
++        if (!isLogicalMultiCamera(logical)) {
++            return null;
++        }
++        Float ref = fovScale(logical);
++        if (ref == null) {
++            return null;
++        }
++        java.util.List<String> out = new java.util.ArrayList<>();
++        for (String phys : logical.getPhysicalCameraIds()) {
++            try {
++                CameraCharacteristics pc = cameraManager.getCameraCharacteristics(phys);
++                Float scale = fovScale(pc);
++                if (scale != null) {
++                    // id:zoom:nearest focus in diopters (0 = fixed focus)
++                    Float near = pc.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
++                    out.add(phys + ":" + Math.round(scale / ref * 100) / 100f + ":" + (near == null ? 0f : near));
++                }
++            } catch (Exception e) {
++                // skip this lens
++            }
++        }
++        return out.isEmpty() ? null : "[" + String.join(", ", out) + "]";
++    }
++
++    /** Focal length over sensor width: proportional to the zoom of a lens. */
++    private static Float fovScale(CameraCharacteristics c) {
++        float[] focal = c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
++        android.util.SizeF size = c.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
++        if (focal == null || focal.length == 0 || size == null || size.getWidth() <= 0) {
++            return null;
++        }
++        return focal[0] / size.getWidth();
++    }
++
+     public static String buildCameraListMessage(boolean includeSizes) {
+         StringBuilder builder = new StringBuilder("List of cameras:");
+         CameraManager cameraManager = ServiceManager.getCameraManager();
+         try {
+-            String[] cameraIds = cameraManager.getCameraIdList();
+-            if (cameraIds.length == 0) {
++            String[] listed = cameraManager.getCameraIdList();
++            // agent-eye: also offer logical multi-cameras the list hides (they switch between the lenses)
++            java.util.List<String> hidden = new java.util.ArrayList<>();
++            for (int i = 0; i < 16; i++) {
++                String id = String.valueOf(i);
++                if (Arrays.asList(listed).contains(id)) {
++                    continue;
++                }
++                try {
++                    CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
++                    if (isLogicalMultiCamera(c)) {
++                        hidden.add(id);
++                    }
++                } catch (Exception e) {
++                    // no camera with this id
++                }
++            }
++            java.util.List<String> cameraIds = new java.util.ArrayList<>(Arrays.asList(listed));
++            cameraIds.addAll(hidden);
++            if (cameraIds.isEmpty()) {
+                 builder.append("\n    (none)");
+             } else {
+                 for (String id : cameraIds) {
+@@ -186,6 +255,36 @@ public final class LogUtils {
                          }
                      }
  
@@ -84,6 +198,18 @@ index 4f4605e..6258150 100644
 +                    if (afOff && minFocus != null && minFocus > 0) {
 +                        builder.append(", focus-range=[0.0, ").append(minFocus).append(']');
 +                    }
++                    Integer[] maxRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) == null ? null
++                            : new Integer[] {characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF)};
++                    if (maxRegions != null && maxRegions[0] > 0) {
++                        builder.append(", af-regions");
++                    }
++                    if (hidden.contains(id)) {
++                        builder.append(", hidden");
++                    }
++                    String lenses = lensZooms(cameraManager, characteristics);
++                    if (lenses != null) {
++                        builder.append(", lenses=").append(lenses);
++                    }
 +                    boolean ae = Boolean.TRUE.equals(characteristics.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE));
 +                    boolean awb = Boolean.TRUE.equals(characteristics.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE));
 +                    if (ae || awb) {
@@ -94,19 +220,20 @@ index 4f4605e..6258150 100644
  
                      if (includeSizes) {
 diff --git a/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java b/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java
-index 1aaeafa..a92a938 100644
+index 1aaeafa..05eb942 100644
 --- a/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java
 +++ b/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java
-@@ -24,6 +24,8 @@ import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
+@@ -24,6 +24,9 @@ import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
  import android.hardware.camera2.CameraDevice;
  import android.hardware.camera2.CameraManager;
  import android.hardware.camera2.CaptureFailure;
 +import android.hardware.camera2.CaptureResult;
 +import android.hardware.camera2.TotalCaptureResult;
++import android.hardware.camera2.params.MeteringRectangle;
  import android.hardware.camera2.CaptureRequest;
  import android.hardware.camera2.params.OutputConfiguration;
  import android.hardware.camera2.params.SessionConfiguration;
-@@ -67,6 +69,15 @@ public class CameraCapture extends SurfaceCapture {
+@@ -67,6 +70,20 @@ public class CameraCapture extends SurfaceCapture {
      private final float angle;
      private final boolean initialTorch;
      private float zoom;
@@ -117,12 +244,17 @@ index 1aaeafa..a92a938 100644
 +    private final int lockDelayMs;
 +    private final boolean report3a;
 +    private long lastReportNs;
++    private float[] afRegion; // x, y, w, h as fractions of the camera image (before agent-eye's rotation and crop)
++    private final boolean commands;
++    private boolean scanning;
++    private long scanTriggerFrame = -1;
++    private long scanStartNs;
 +    private float focusMin = Float.MAX_VALUE;
 +    private float focusMax = -1;
  
      private VideoConstraints videoConstraints;
  
-@@ -103,6 +114,11 @@ public class CameraCapture extends SurfaceCapture {
+@@ -103,6 +120,13 @@ public class CameraCapture extends SurfaceCapture {
          this.angle = options.getAngle();
          this.initialTorch = options.getCameraTorch();
          this.zoom = options.getCameraZoom();
@@ -131,16 +263,30 @@ index 1aaeafa..a92a938 100644
 +        this.awbLock = options.getCameraAwbLock();
 +        this.lockDelayMs = options.getCameraLockDelayMs();
 +        this.report3a = options.getCamera3aReport();
++        this.afRegion = options.getCameraAfRegion();
++        this.commands = options.getCameraCommands();
      }
  
      @Override
-@@ -327,9 +343,17 @@ public class CameraCapture extends SurfaceCapture {
+@@ -167,8 +191,8 @@ public class CameraCapture extends SurfaceCapture {
+         String[] cameraIds = cameraManager.getCameraIdList();
+         if (explicitCameraId != null) {
+             if (!Arrays.asList(cameraIds).contains(explicitCameraId)) {
+-                Ln.e("Camera with id " + explicitCameraId + " not found\n" + LogUtils.buildCameraListMessage(false));
+-                throw new ConfigurationException("Camera id not found");
++                // agent-eye: try ids the list hides (vendor logical multi-cameras), the camera service decides
++                Ln.w("agent-eye-3a: camera " + explicitCameraId + " is not listed, trying it anyway");
+             }
+             return explicitCameraId;
+         }
+@@ -327,9 +351,21 @@ public class CameraCapture extends SurfaceCapture {
                          requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
                      }
  
 +                    if (focus >= 0) {
 +                        applyManualFocus(characteristics(), focus);
 +                    }
++                    applyAfRegion();
 +
                      CaptureRequest request = requestBuilder.build();
                      setRepeatingRequest(session, request);
@@ -149,15 +295,19 @@ index 1aaeafa..a92a938 100644
 +                        // Lock once auto exposure / white balance have converged on the scene.
 +                        cameraHandler.postDelayed(CameraCapture.this::apply3aLocks, Math.max(0, lockDelayMs));
 +                    }
++                    if (commands) {
++                        startCommandReader();
++                    }
                  } catch (CameraAccessException e) {
                      Ln.e("Camera error", e);
                      disconnected.set(true);
-@@ -449,6 +473,13 @@ public class CameraCapture extends SurfaceCapture {
+@@ -449,6 +485,14 @@ public class CameraCapture extends SurfaceCapture {
                  // Called for each frame captured, do nothing
              }
  
 +            @Override
 +            public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
++                checkScan(result);
 +                if (report3a) {
 +                    report3a(result);
 +                }
@@ -166,7 +316,7 @@ index 1aaeafa..a92a938 100644
              @Override
              public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request, CaptureFailure failure) {
                  Ln.w("Camera capture failed: frame " + failure.getFrameNumber());
-@@ -525,6 +556,104 @@ public class CameraCapture extends SurfaceCapture {
+@@ -525,6 +569,256 @@ public class CameraCapture extends SurfaceCapture {
          return zoomRange.clamp(value);
      }
  
@@ -257,6 +407,10 @@ index 1aaeafa..a92a938 100644
 +        appendResult(sb, "ae_lock", r.get(CaptureResult.CONTROL_AE_LOCK));
 +        appendResult(sb, "awb_state", r.get(CaptureResult.CONTROL_AWB_STATE));
 +        appendResult(sb, "awb_lock", r.get(CaptureResult.CONTROL_AWB_LOCK));
++        appendResult(sb, "zoom", r.get(CaptureResult.CONTROL_ZOOM_RATIO));
++        if (android.os.Build.VERSION.SDK_INT >= 29) {
++            appendResult(sb, "lens", r.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID));
++        }
 +        appendResult(sb, "exposure_ns", r.get(CaptureResult.SENSOR_EXPOSURE_TIME));
 +        appendResult(sb, "iso", r.get(CaptureResult.SENSOR_SENSITIVITY));
 +        Ln.i(sb.toString());
@@ -265,6 +419,154 @@ index 1aaeafa..a92a938 100644
 +    private static void appendResult(StringBuilder sb, String key, Object value) {
 +        if (value != null) {
 +            sb.append(' ').append(key).append('=').append(value);
++        }
++    }
++
++    // ------------------------------------------------- agent-eye: autofocus region and live commands
++
++    /** The AF region as a rectangle of the active array. The stream is a centred crop of it at the current zoom. */
++    private MeteringRectangle[] afRectangles(float[] region) {
++        CameraCharacteristics c = characteristics();
++        Rect active = c == null ? null : c.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
++        if (active == null || captureSize == null) {
++            return null;
++        }
++        // With CONTROL_ZOOM_RATIO, 3A regions use the active array's coordinates for the zoomed field of view.
++        float aw = active.width(), ah = active.height();
++        float streamRatio = (float) captureSize.getWidth() / captureSize.getHeight();
++        float vw = aw, vh = ah, x0 = 0, y0 = 0;
++        if (streamRatio > aw / ah) {
++            vh = aw / streamRatio;
++            y0 = (ah - vh) / 2;
++        } else {
++            vw = ah * streamRatio;
++            x0 = (aw - vw) / 2;
++        }
++        int x = Math.round(x0 + Math.max(0, region[0]) * vw);
++        int y = Math.round(y0 + Math.max(0, region[1]) * vh);
++        int w = Math.max(1, Math.min(Math.round(region[2] * vw), (int) aw - x));
++        int h = Math.max(1, Math.min(Math.round(region[3] * vh), (int) ah - y));
++        return new MeteringRectangle[] {new MeteringRectangle(x, y, w, h, MeteringRectangle.METERING_WEIGHT_MAX)};
++    }
++
++    private void applyAfRegion() {
++        if (afRegion == null) {
++            requestBuilder.set(CaptureRequest.CONTROL_AF_REGIONS, null);
++            return;
++        }
++        CameraCharacteristics c = characteristics();
++        Integer max = c == null ? null : c.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
++        if (max == null || max < 1) {
++            Ln.w("agent-eye-3a: unsupported=af_region");
++            return;
++        }
++        requestBuilder.set(CaptureRequest.CONTROL_AF_REGIONS, afRectangles(afRegion));
++    }
++
++    /** One command per line on stdin, applied to the running camera without restarting it. */
++    private void startCommandReader() {
++        Thread t = new Thread(() -> {
++            try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.InputStreamReader(System.in))) {
++                String line;
++                while ((line = in.readLine()) != null) {
++                    String cmd = line.trim();
++                    if (!cmd.isEmpty()) {
++                        cameraHandler.post(() -> runCommand(cmd));
++                    }
++                }
++            } catch (IOException e) {
++                Ln.w("agent-eye-3a: command input closed");
++            }
++        }, "agent-eye-commands");
++        t.setDaemon(true);
++        t.start();
++    }
++
++    @TargetApi(AndroidVersions.API_30_ANDROID_11)
++    private void runCommand(String cmd) {
++        assertCameraThread();
++        if (currentSession == null || requestBuilder == null) {
++            return;
++        }
++        String[] a = cmd.split("\\s+");
++        try {
++            switch (a[0]) {
++                case "zoom":
++                    zoom = clampZoom(Float.parseFloat(a[1]));
++                    requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
++                    break;
++                case "focus":
++                    if ("auto".equals(a[1])) {
++                        requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
++                        requestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, null);
++                    } else {
++                        applyManualFocus(characteristics(), Float.parseFloat(a[1]));
++                    }
++                    break;
++                case "af_region":
++                    afRegion = "none".equals(a[1]) ? null
++                            : new float[] {Float.parseFloat(a[1]), Float.parseFloat(a[2]), Float.parseFloat(a[3]), Float.parseFloat(a[4])};
++                    applyAfRegion();
++                    break;
++                case "af_scan":
++                    startScan();
++                    return;
++                case "ae_lock":
++                    requestBuilder.set(CaptureRequest.CONTROL_AE_LOCK, "1".equals(a[1]));
++                    break;
++                case "awb_lock":
++                    requestBuilder.set(CaptureRequest.CONTROL_AWB_LOCK, "1".equals(a[1]));
++                    break;
++                default:
++                    Ln.w("agent-eye-3a: unknown command " + cmd);
++                    return;
++            }
++            setRepeatingRequest(currentSession, requestBuilder.build());
++            Ln.i("agent-eye-3a: done " + cmd);
++        } catch (RuntimeException | CameraAccessException e) {
++            Ln.w("agent-eye-3a: failed " + cmd + ": " + e.getMessage());
++        }
++    }
++
++    /** One autofocus scan (on the AF region when there is one); the lens stays where it ends ("scanned" line). */
++    private void startScan() throws CameraAccessException {
++        requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO);
++        requestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, null);
++        requestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL);
++        setRepeatingRequest(currentSession, requestBuilder.build());
++        requestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START);
++        CaptureRequest trigger = requestBuilder.build();
++        requestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE);
++        scanning = true;
++        scanTriggerFrame = -1;
++        scanStartNs = System.nanoTime();
++        CameraCaptureSession.CaptureCallback onTrigger = new CameraCaptureSession.CaptureCallback() {
++            @Override
++            public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
++                scanTriggerFrame = result.getFrameNumber();
++            }
++        };
++        if (highSpeed) {
++            CameraConstrainedHighSpeedCaptureSession hs = (CameraConstrainedHighSpeedCaptureSession) currentSession;
++            hs.captureBurst(hs.createHighSpeedRequestList(trigger), onTrigger, cameraHandler);
++        } else {
++            currentSession.capture(trigger, onTrigger, cameraHandler);
++        }
++        setRepeatingRequest(currentSession, requestBuilder.build());
++    }
++
++    private void checkScan(TotalCaptureResult r) {
++        if (!scanning) {
++            return;
++        }
++        Integer state = r.get(CaptureResult.CONTROL_AF_STATE);
++        boolean done = scanTriggerFrame >= 0 && r.getFrameNumber() > scanTriggerFrame && state != null
++                && (state == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED || state == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED);
++        boolean timeout = System.nanoTime() - scanStartNs > 4_000_000_000L;
++        if (done || timeout) {
++            scanning = false;
++            boolean ok = done && state == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED;
++            Ln.i("agent-eye-3a: scanned focus=" + r.get(CaptureResult.LENS_FOCUS_DISTANCE) + " ok=" + ok);
 +        }
 +    }
 +

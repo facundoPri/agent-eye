@@ -13,7 +13,7 @@ JAVAC=${JAVA_HOME:+$JAVA_HOME/bin/}javac
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
 
-git clone -q --depth 1 -b v4.1 https://github.com/Genymobile/scrcpy.git "$W/scrcpy"
+git -c advice.detachedHead=false clone -q --depth 1 -b v4.1 https://github.com/Genymobile/scrcpy.git "$W/scrcpy"
 git -C "$W/scrcpy" apply "$ROOT/vendor/scrcpy-camera-controls.patch"
 SRC=$W/scrcpy/server/src/main
 mkdir -p "$W/classes" "$W/gen/com/genymobile/scrcpy"

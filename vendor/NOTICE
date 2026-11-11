@@ -12,5 +12,11 @@ scripts/build-server.sh rebuilds the jar):
 - camera_3a_report: about twice a second, one log line with the lens focus
   distance (and its range over every frame since the last line), autofocus,
   exposure and white balance state.
-- list_cameras also prints each camera's manual focus range and 3A locks.
+- camera_af_region=x,y,w,h: autofocus on a part of the picture.
+- camera_commands: commands on stdin change the running camera without
+  restarting it (zoom, focus, af_region, af_scan, ae_lock, awb_lock).
+- The 3A reports also give the zoom and the lens in use (logical cameras).
+- Camera ids the list hides can be opened, and list_cameras also prints hidden
+  logical multi-cameras with their lenses (zoom, nearest focus), each camera's
+  manual focus range, AF regions and 3A locks.
 The server protocol is unchanged.

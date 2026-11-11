@@ -43,9 +43,16 @@ profile's fps. Report that number, never the requested one. Frame times are capt
 
 **Focus.** An Android summary has `camera.focus` (where the lens was, `mode` auto or fixed). A
 warning saying autofocus refocused, or a fixed focus did not hold, means frames may be blurred:
-report it and do not use those frames for measurements. The fix is a fixed focus in the profile
-(the human sets it with **Fix focus here** in `agent-eye preview`); change it yourself only when
-asked to. With autofocus the first ~1.5 s of the file are the camera searching
+report it and do not use those frames for measurements. The fix is a fixed focus in the profile.
+When asked to (or when the human approved changing the profile), you can do it yourself:
+
+- `agent-eye focus scan --region x,y,w,h`: autofocus once on that part of the picture (fractions
+  of the snapshot) and fix the focus there. `agent-eye focus auto` / `agent-eye focus 4.25`.
+- `agent-eye frame --region x,y,w,h`: frame that part (camera zoom first, then a centred crop)
+  and focus on it. Read its `notes`, then take a snapshot to check.
+- `agent-eye configure --update '{"exposureLock": true}'`: change single fields (`null` removes).
+
+Use `--profile <name>` on a profile of your own unless asked to change the human's. With autofocus the first ~1.5 s of the file are the camera searching
 (`camera.focus.settledAtMs`); `start` returns after that.
 
 **Brightness** is not a measurement unless `camera.exposure.locked` is true: auto exposure shifts

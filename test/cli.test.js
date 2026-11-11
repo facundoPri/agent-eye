@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setupFakes, waitFor } from './helpers/fakes.js';
+import { ANDROID_PROFILE, setupFakes, waitFor } from './helpers/fakes.js';
 import { summaryText } from '../src/cli.js';
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'agent-eye.js');
@@ -247,4 +247,27 @@ test('`configure --set` on an empty project makes the first profile the default'
   const r = await cli(root, ['configure', '--name', 'first', '--set', hs]);
   assert.equal(r.code, 0, r.stdout);
   assert.equal(readConfig(root).default, 'first');
+});
+
+test('`configure --update` changes only the given fields; null removes one', { timeout: 20000 }, async () => {
+  const root = fakes.project({ ...ANDROID_PROFILE, focus: 4 });
+  const r = await cli(root, ['configure', '--update', JSON.stringify({ exposureLock: true, focus: null })]);
+  assert.equal(r.code, 0, r.stdout);
+  const p = readConfig(root).profiles.default;
+  assert.equal(p.exposureLock, true); assert.equal('focus' in p, false); assert.equal(p.fps, ANDROID_PROFILE.fps);
+});
+
+test('`frame --region` and `focus` set zoom, crop and focus from the live phone camera', { timeout: 30000 }, async () => {
+  const root = fakes.project({ source: 'android:FAKE1/4', width: 1920, height: 1080, fps: 30 });
+  const f = await cli(root, ['frame', '--region', '0.45,0.44,0.1,0.12']);
+  assert.equal(f.code, 0, f.stdout);
+  assert.equal(f.json.lens.id, '0');
+  assert.ok(f.json.saved.zoom < 2.2 && f.json.saved.focus === 4.25 && f.json.saved.crop.w < 1, JSON.stringify(f.json.saved));
+  assert.match(f.json.notes.join(' '), /telephoto/);
+  const scan = await cli(root, ['focus', 'scan', '--region', '0.2,0.2,0.6,0.6']);
+  assert.equal(scan.code, 0, scan.stdout);
+  assert.equal(scan.json.focus, 4.25); assert.ok(scan.json.saved.focusRegion);
+  assert.equal('focus' in (await cli(root, ['focus', 'auto'])).json.saved, false);
+  assert.equal((await cli(root, ['focus', '2.5'])).json.saved.focus, 2.5);
+  assert.equal((await cli(root, ['frame', '--region', '0.5,0.5,0.6,0.6'])).code, 2, 'a region outside the picture is refused');
 });
