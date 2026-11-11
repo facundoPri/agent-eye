@@ -5,6 +5,7 @@ import { findBin, raceTimer, run, sleep, UserError } from './util.js';
 import { REMOTE_JAR, SCRCPY_VERSION, pushServer, resolveMacIndex } from './devices.js';
 import { androidServerOptions, inputArgs } from './ffargs.js';
 import { scrcpyToTs } from './mpegts.js';
+import { camera3aCollector } from './camera3a.js';
 
 const MAC_PERMISSION_HINT =
   'macOS blocked camera access for this terminal. Open System Settings > Privacy & Security > Camera, enable your terminal app, then retry.';
@@ -43,7 +44,7 @@ function firstBytes(port, ms, interrupted) {
   });
 }
 
-async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs }) {
+async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs, waitReady }) {
   const adb = findBin('adb');
   const { serial, cameraId } = parseAndroidSource(profile.source);
   await pushServer(serial);
@@ -56,6 +57,7 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs })
   if (fwd.code !== 0 || !port) throw new UserError(`adb forward failed: ${fwd.stderr.trim()}`, { code: 3 });
 
   let server = null, socket = null, serverLog = '', serverExited = false, ffExited = false;
+  const camera3a = camera3aCollector();
   const cleanup = async () => {
     socket?.destroy();
     server?.kill('SIGTERM');
@@ -72,7 +74,7 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs })
       'com.genymobile.scrcpy.Server', SCRCPY_VERSION, `scid=${scidHex}`, 'log_level=info', ...androidServerOptions(profile, cameraId)],
     { stdio: ['ignore', 'pipe', 'pipe'] });
     const onLog = (d) => { serverLog = (serverLog + d).slice(-2000); };
-    server.stdout.on('data', onLog); server.stderr.on('data', onLog);
+    server.stdout.on('data', (d) => { onLog(d); camera3a.push(String(d)); }); server.stderr.on('data', onLog);
     server.on('error', onLog);
     server.on('close', () => { serverExited = true; wake(); });
 
@@ -108,15 +110,23 @@ async function startAndroid(profile, ff, ffmpegDone, { signal, startTimeoutMs })
   const endInput = () => { if (!ts.writableEnded && !ts.destroyed) ts.end(); };
   socket.on('close', endInput); socket.on('error', endInput);
   ffmpegDone.then(cleanup);
-  return { startedAt, stopInput: async () => { socket.destroy(); endInput(); } };
+  // Autofocus searches for about 1.5 s when the camera opens, and the exposure / white balance locks engage
+  // after it has metered the scene. A recording counts as started only then, so whatever happens after
+  // `start` returns is filmed in focus and with the locks on. (The file starts earlier, with the search.)
+  if (waitReady) {
+    const aborted = new Promise((r) => (signal?.aborted ? r() : signal?.addEventListener('abort', r, { once: true })));
+    await Promise.race([camera3a.waitReady(4000, { locks: !!(profile.exposureLock || profile.whiteBalanceLock) }), interrupted, aborted]);
+  }
+  return { startedAt, camera3a, stopInput: async () => { socket.destroy(); endInput(); } };
 }
 
 /**
  * Open a camera with an ffmpeg output attached.
- * Resolves once frames are flowing; on any failure (or `signal` aborting) everything it started is stopped.
+ * Resolves once frames are flowing (with `waitReady`, once a phone camera's focus has also settled and its
+ * locks are on, up to 4 s more); on any failure (or `signal` aborting) everything it started is stopped.
  * `stop()` finalises the output cleanly, or kills ffmpeg after 10 s; the result says which.
  */
-export async function startSession(profile, outputArgs, { onStdout, signal, startTimeoutMs = 12000 } = {}) {
+export async function startSession(profile, outputArgs, { onStdout, signal, startTimeoutMs = 12000, waitReady = false } = {}) {
   const ffmpeg = findBin('ffmpeg');
   if (!ffmpeg) throw new UserError('ffmpeg is not installed.', { code: 3, hint: 'brew install ffmpeg' });
   const isAndroid = profile.source.startsWith('android:');
@@ -137,7 +147,7 @@ export async function startSession(profile, outputArgs, { onStdout, signal, star
   let startedAt;
   try {
     if (isAndroid) {
-      android = await startAndroid(profile, ff, closed, { signal, startTimeoutMs });
+      android = await startAndroid(profile, ff, closed, { signal, startTimeoutMs, waitReady });
       startedAt = android.startedAt;
     } else {
       // avfoundation failures (no permission, bad mode) surface within about a second.
@@ -158,5 +168,5 @@ export async function startSession(profile, outputArgs, { onStdout, signal, star
     if (!res) { ff.kill('SIGKILL'); return { ...(await closed), killed: true }; }
     return res;
   })();
-  return { stop, closed, startedAt, explain: (r) => explainFfmpegFailure(r.stderr, profile) };
+  return { stop, closed, startedAt, camera3a: android?.camera3a ?? null, explain: (r) => explainFfmpegFailure(r.stderr, profile) };
 }

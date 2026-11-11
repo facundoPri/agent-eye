@@ -62,8 +62,14 @@ export function androidServerOptions(profile, cameraId) {
     'audio=false', 'control=false', 'tunnel_forward=true',
     // Bare packets, each with its 12-byte header (capture PTS + size): send_frame_meta is what raw_stream turns off.
     'send_device_meta=false', 'send_dummy_byte=false', 'send_stream_meta=false', 'send_frame_meta=true',
+    // One line about twice a second with what focus, exposure and white balance actually did (see camera3a.js).
+    'camera_3a_report=true',
   ];
   if (profile.zoom > 1) opts.push(`camera_zoom=${profile.zoom}`);
+  if (profile.focus !== undefined) opts.push(`camera_focus=${profile.focus}`);
+  // Locks engage 1.5 s after the camera starts, once auto exposure and white balance have settled on the scene.
+  if (profile.exposureLock) opts.push('camera_ae_lock=true');
+  if (profile.whiteBalanceLock) opts.push('camera_awb_lock=true');
   if (profile.fps > 60) opts.push('camera_high_speed=true');
   if (profile.fps > 120) opts.push(`video_codec_options=operating-rate:int=${Math.round(profile.fps * 2)},priority:int=0`);
   return opts;

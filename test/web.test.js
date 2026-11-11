@@ -36,7 +36,7 @@ function element(tag, attrs) {
 }
 
 const DEVICE = { id: 'android:FAKE1/0', kind: 'android', name: 'Fake (back)',
-  caps: { sizes: ['1920x1080', '1280x720'], fps: [15, 30, 60], highSpeed: [{ size: '1280x720', fps: [120, 240] }], zoomRange: [1, 8] } };
+  caps: { sizes: ['1920x1080', '1280x720'], fps: [15, 30, 60], highSpeed: [{ size: '1280x720', fps: [120, 240] }], zoomRange: [1, 8], focusRange: [0, 10], locks: ['ae', 'awb'] } };
 
 /** Load the page with `saved` as the current profile; returns { page, saves, $ }. */
 async function openPage(saved) {
@@ -49,7 +49,7 @@ async function openPage(saved) {
     for (const o of m[2].matchAll(/<option value="([^"]*)">/g)) els[m[1]].appendChild({ value: o[1] });
   }
   const saves = [], starts = [], calls = [], ticks = [], docListeners = {};
-  const server = { previewId: 'p1', startError: null, saveError: null }; // what /api/preview/stats reports, and failures to inject
+  const server = { previewId: 'p1', startError: null, saveError: null, camera: null }; // what /api/preview/stats reports, and failures to inject
   const fail = (status, error) => { throw Object.assign(new Error(error), { status }); };
   const replies = {
     'GET /api/state': () => ({ mode: 'preview', profileName: 'default', profile: { name: 'default', ...saved } }),
@@ -57,7 +57,7 @@ async function openPage(saved) {
     'POST /api/preview/start': () => { if (server.startError) fail(400, server.startError); starts.push(1); return { id: server.previewId }; },
     'POST /api/preview/stop': () => ({ ok: true }),
     'POST /api/done': () => ({ ok: true }),
-    'GET /api/preview/stats': () => ({ id: server.previewId, frames: 5, fps: 15 }),
+    'GET /api/preview/stats': () => ({ id: server.previewId, frames: 5, fps: 15, camera: server.camera }),
     'POST /api/save': (b) => { if (server.saveError) fail(409, server.saveError); saves.push(b); return { name: b.name, configPath: '/p/.agent-eye/config.json' }; },
     'GET /api/skill': () => ({ targets: [], upToDate: true, installed: true, projectRoot: '/p' }),
   };
@@ -171,4 +171,26 @@ test('Close stops the preview, releases the camera, and the page stops polling i
   assert.ok(els.bye.classes.has('show'));
   for (const tick of ticks) await tick();
   assert.equal(calls.includes('/api/preview/stats'), false, 'no stats poll after Close');
+});
+
+test('a fixed focus and 3A locks round-trip', async () => {
+  const saved = { ...base, focus: 4.25, exposureLock: true, whiteBalanceLock: true };
+  const { confirm } = await openPage(saved);
+  assert.deepEqual(await confirm(), saved);
+});
+
+test('"Fix focus here" fixes the focus where autofocus has it in the preview', async () => {
+  const { page, els, confirm, ticks, server } = await openPage(base);
+  assert.equal(els.focusHere.disabled, true, 'nothing to fix before the preview reports a focus');
+  vm.runInContext('previewId = "p1"', page);
+  server.camera = { focus: 4.255319, autofocus: true, aeLock: false, awbLock: false };
+  for (const tick of ticks) await tick();
+  assert.match(els.focusStat.textContent, /Focus 24 cm · auto/);
+  assert.equal(els.focusHere.disabled, false);
+  els.focusHere.onclick();
+  assert.equal(els.focusMode.value, 'fixed');
+  assert.match(els.focusV.textContent, /23 cm \(4.26 D\)/);
+  assert.equal((await confirm()).focus, 4.26);
+  els.focusMode.value = 'auto'; els.focusMode.onchange();
+  assert.equal('focus' in (await confirm()), false);
 });

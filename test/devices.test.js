@@ -4,7 +4,7 @@ import { parseAdbDevices, parseAndroidCameras, parseAvfoundationDevices, parseAv
 import { androidProblems } from '../src/validate.js';
 
 const CAMERAS = `[server] INFO: List of cameras:
-    --camera-id=0    (back, 4096x3072, fps={10, 15, 30, 60}, zoom-range=[1, 10])
+    --camera-id=0    (back, 4096x3072, fps={10, 15, 30, 60}, zoom-range=[1, 10], focus-range=[0.0, 10.0], locks=ae+awb)
         - 4096x3072
         - 1920x1080
         - 1280x720
@@ -54,4 +54,21 @@ test('validation accepts slow motion sizes and rejects unsupported rates', () =>
   assert.match(androidProblems({ ...p, width: 1000, height: 1000 }, back)[0], /not a supported size/);
   assert.match(androidProblems({ ...p, zoom: 12 }, back)[0], /range 1-10/);
   assert.match(androidProblems({ ...p, width: 4096, height: 3072, fps: 120 }, back)[0], /does not support 120/);
+});
+
+test('parses manual focus range and 3A locks; cameras without them get none', () => {
+  const [back, front] = parseAndroidCameras(CAMERAS);
+  assert.deepEqual(back.focusRange, [0, 10]);
+  assert.deepEqual(back.locks, ['ae', 'awb']);
+  assert.equal(front.focusRange, null);
+  assert.deepEqual(front.locks, []);
+});
+
+test('validation checks focus and locks against the camera', () => {
+  const [back, front] = parseAndroidCameras(CAMERAS);
+  const p = { width: 1920, height: 1080, fps: 30, zoom: 1, focus: 4, exposureLock: true, whiteBalanceLock: true };
+  assert.deepEqual(androidProblems(p, back), []);
+  assert.match(androidProblems({ ...p, focus: 12 }, back)[0], /closer than this camera can focus .*nearest 10 cm/);
+  const f = androidProblems(p, front);
+  assert.match(f[0], /no manual focus/); assert.match(f[1], /cannot lock exposure/); assert.match(f[2], /cannot lock white balance/);
 });

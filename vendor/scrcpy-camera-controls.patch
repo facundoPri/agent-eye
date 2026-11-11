@@ -1,0 +1,273 @@
+diff --git a/server/src/main/java/com/genymobile/scrcpy/Options.java b/server/src/main/java/com/genymobile/scrcpy/Options.java
+index 26a6ba9..3135b7a 100644
+--- a/server/src/main/java/com/genymobile/scrcpy/Options.java
++++ b/server/src/main/java/com/genymobile/scrcpy/Options.java
+@@ -49,6 +49,12 @@ public class Options {
+     private int cameraFps;
+     private boolean cameraHighSpeed;
+     private boolean cameraTorch;
++    // agent-eye: 3A controls
++    private float cameraFocus = -1;
++    private boolean cameraAeLock;
++    private boolean cameraAwbLock;
++    private int cameraLockDelayMs = 1500;
++    private boolean camera3aReport;
+     private boolean showTouches;
+     private boolean stayAwake;
+     private int screenOffTimeout = -1;
+@@ -195,6 +201,26 @@ public class Options {
+         return cameraTorch;
+     }
+ 
++    public float getCameraFocus() {
++        return cameraFocus;
++    }
++
++    public boolean getCameraAeLock() {
++        return cameraAeLock;
++    }
++
++    public boolean getCameraAwbLock() {
++        return cameraAwbLock;
++    }
++
++    public int getCameraLockDelayMs() {
++        return cameraLockDelayMs;
++    }
++
++    public boolean getCamera3aReport() {
++        return camera3aReport;
++    }
++
+     public boolean getShowTouches() {
+         return showTouches;
+     }
+@@ -518,6 +544,21 @@ public class Options {
+                 case "camera_high_speed":
+                     options.cameraHighSpeed = Boolean.parseBoolean(value);
+                     break;
++                case "camera_focus":
++                    options.cameraFocus = Float.parseFloat(value);
++                    break;
++                case "camera_ae_lock":
++                    options.cameraAeLock = Boolean.parseBoolean(value);
++                    break;
++                case "camera_awb_lock":
++                    options.cameraAwbLock = Boolean.parseBoolean(value);
++                    break;
++                case "camera_lock_delay_ms":
++                    options.cameraLockDelayMs = Integer.parseInt(value);
++                    break;
++                case "camera_3a_report":
++                    options.camera3aReport = Boolean.parseBoolean(value);
++                    break;
+                 case "camera_torch":
+                     options.cameraTorch = Boolean.parseBoolean(value);
+                     break;
+diff --git a/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java b/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
+index 4f4605e..6258150 100644
+--- a/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
++++ b/server/src/main/java/com/genymobile/scrcpy/util/LogUtils.java
+@@ -186,6 +186,24 @@ public final class LogUtils {
+                         }
+                     }
+ 
++                    // agent-eye: manual focus range (diopters) and 3A locks, when the camera supports them
++                    int[] afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
++                    Float minFocus = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
++                    boolean afOff = false;
++                    if (afModes != null) {
++                        for (int m : afModes) {
++                            afOff |= m == CameraCharacteristics.CONTROL_AF_MODE_OFF;
++                        }
++                    }
++                    if (afOff && minFocus != null && minFocus > 0) {
++                        builder.append(", focus-range=[0.0, ").append(minFocus).append(']');
++                    }
++                    boolean ae = Boolean.TRUE.equals(characteristics.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE));
++                    boolean awb = Boolean.TRUE.equals(characteristics.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE));
++                    if (ae || awb) {
++                        builder.append(", locks=").append(ae && awb ? "ae+awb" : ae ? "ae" : "awb");
++                    }
++
+                     builder.append(')');
+ 
+                     if (includeSizes) {
+diff --git a/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java b/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java
+index 1aaeafa..a92a938 100644
+--- a/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java
++++ b/server/src/main/java/com/genymobile/scrcpy/video/CameraCapture.java
+@@ -24,6 +24,8 @@ import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
+ import android.hardware.camera2.CameraDevice;
+ import android.hardware.camera2.CameraManager;
+ import android.hardware.camera2.CaptureFailure;
++import android.hardware.camera2.CaptureResult;
++import android.hardware.camera2.TotalCaptureResult;
+ import android.hardware.camera2.CaptureRequest;
+ import android.hardware.camera2.params.OutputConfiguration;
+ import android.hardware.camera2.params.SessionConfiguration;
+@@ -67,6 +69,15 @@ public class CameraCapture extends SurfaceCapture {
+     private final float angle;
+     private final boolean initialTorch;
+     private float zoom;
++    // agent-eye: 3A controls (focus < 0 means autofocus)
++    private final float focus;
++    private final boolean aeLock;
++    private final boolean awbLock;
++    private final int lockDelayMs;
++    private final boolean report3a;
++    private long lastReportNs;
++    private float focusMin = Float.MAX_VALUE;
++    private float focusMax = -1;
+ 
+     private VideoConstraints videoConstraints;
+ 
+@@ -103,6 +114,11 @@ public class CameraCapture extends SurfaceCapture {
+         this.angle = options.getAngle();
+         this.initialTorch = options.getCameraTorch();
+         this.zoom = options.getCameraZoom();
++        this.focus = options.getCameraFocus();
++        this.aeLock = options.getCameraAeLock();
++        this.awbLock = options.getCameraAwbLock();
++        this.lockDelayMs = options.getCameraLockDelayMs();
++        this.report3a = options.getCamera3aReport();
+     }
+ 
+     @Override
+@@ -327,9 +343,17 @@ public class CameraCapture extends SurfaceCapture {
+                         requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
+                     }
+ 
++                    if (focus >= 0) {
++                        applyManualFocus(characteristics(), focus);
++                    }
++
+                     CaptureRequest request = requestBuilder.build();
+                     setRepeatingRequest(session, request);
+                     currentSession = session;
++                    if (aeLock || awbLock) {
++                        // Lock once auto exposure / white balance have converged on the scene.
++                        cameraHandler.postDelayed(CameraCapture.this::apply3aLocks, Math.max(0, lockDelayMs));
++                    }
+                 } catch (CameraAccessException e) {
+                     Ln.e("Camera error", e);
+                     disconnected.set(true);
+@@ -449,6 +473,13 @@ public class CameraCapture extends SurfaceCapture {
+                 // Called for each frame captured, do nothing
+             }
+ 
++            @Override
++            public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
++                if (report3a) {
++                    report3a(result);
++                }
++            }
++
+             @Override
+             public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request, CaptureFailure failure) {
+                 Ln.w("Camera capture failed: frame " + failure.getFrameNumber());
+@@ -525,6 +556,104 @@ public class CameraCapture extends SurfaceCapture {
+         return zoomRange.clamp(value);
+     }
+ 
++    // ---------------------------------------------------------------- agent-eye: 3A controls
++
++    private CameraCharacteristics characteristics() {
++        try {
++            return ServiceManager.getCameraManager().getCameraCharacteristics(cameraId);
++        } catch (CameraAccessException e) {
++            Ln.w("Could not get camera characteristics");
++            return null;
++        }
++    }
++
++    /** Autofocus off and the lens held at a fixed distance, in diopters (1/m; 0 = infinity). */
++    private void applyManualFocus(CameraCharacteristics c, float diopters) {
++        int[] afModes = c == null ? null : c.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
++        Float min = c == null ? null : c.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
++        boolean afOff = false;
++        if (afModes != null) {
++            for (int m : afModes) {
++                afOff |= m == CaptureRequest.CONTROL_AF_MODE_OFF;
++            }
++        }
++        if (!afOff || min == null || min <= 0) {
++            Ln.w("agent-eye-3a: unsupported=focus (this camera has no manual focus)");
++            return;
++        }
++        float d = Math.max(0, Math.min(diopters, min));
++        Ln.i("agent-eye-3a: set focus=" + d + " min=" + min);
++        requestBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF);
++        requestBuilder.set(CaptureRequest.LENS_FOCUS_DISTANCE, d);
++    }
++
++    private void apply3aLocks() {
++        assertCameraThread();
++        if (currentSession == null || requestBuilder == null) {
++            return;
++        }
++        CameraCharacteristics c = characteristics();
++        try {
++            if (aeLock) {
++                if (c != null && Boolean.TRUE.equals(c.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE))) {
++                    requestBuilder.set(CaptureRequest.CONTROL_AE_LOCK, true);
++                } else {
++                    Ln.w("agent-eye-3a: unsupported=ae_lock");
++                }
++            }
++            if (awbLock) {
++                if (c != null && Boolean.TRUE.equals(c.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE))) {
++                    requestBuilder.set(CaptureRequest.CONTROL_AWB_LOCK, true);
++                } else {
++                    Ln.w("agent-eye-3a: unsupported=awb_lock");
++                }
++            }
++            setRepeatingRequest(currentSession, requestBuilder.build());
++            Ln.i("agent-eye-3a: locked ae=" + aeLock + " awb=" + awbLock);
++        } catch (CameraAccessException e) {
++            Ln.e("Camera error", e);
++        }
++    }
++
++    /** What the camera actually did, about twice a second: one parseable line on stdout. */
++    private void report3a(CaptureResult r) {
++        // Every frame counts towards the focus range, so a short autofocus hunt between two reports still shows.
++        Float f = r.get(CaptureResult.LENS_FOCUS_DISTANCE);
++        if (f != null) {
++            focusMin = Math.min(focusMin, f);
++            focusMax = Math.max(focusMax, f);
++        }
++        long now = System.nanoTime();
++        if (now - lastReportNs < 500_000_000L) {
++            return;
++        }
++        lastReportNs = now;
++        StringBuilder sb = new StringBuilder("agent-eye-3a:");
++        appendResult(sb, "focus", f);
++        if (focusMax >= 0) {
++            appendResult(sb, "focus_min", focusMin);
++            appendResult(sb, "focus_max", focusMax);
++        }
++        focusMin = Float.MAX_VALUE;
++        focusMax = -1;
++        appendResult(sb, "af_mode", r.get(CaptureResult.CONTROL_AF_MODE));
++        appendResult(sb, "af_state", r.get(CaptureResult.CONTROL_AF_STATE));
++        appendResult(sb, "lens_state", r.get(CaptureResult.LENS_STATE));
++        appendResult(sb, "ae_state", r.get(CaptureResult.CONTROL_AE_STATE));
++        appendResult(sb, "ae_lock", r.get(CaptureResult.CONTROL_AE_LOCK));
++        appendResult(sb, "awb_state", r.get(CaptureResult.CONTROL_AWB_STATE));
++        appendResult(sb, "awb_lock", r.get(CaptureResult.CONTROL_AWB_LOCK));
++        appendResult(sb, "exposure_ns", r.get(CaptureResult.SENSOR_EXPOSURE_TIME));
++        appendResult(sb, "iso", r.get(CaptureResult.SENSOR_SENSITIVITY));
++        Ln.i(sb.toString());
++    }
++
++    private static void appendResult(StringBuilder sb, String key, Object value) {
++        if (value != null) {
++            sb.append(' ').append(key).append('=').append(value);
++        }
++    }
++
+     private void assertCameraThread() {
+         assert Thread.currentThread() == cameraThread;
+     }

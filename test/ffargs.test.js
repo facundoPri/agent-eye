@@ -73,3 +73,11 @@ test('Android input keeps the phone capture timestamps, not arrival times', () =
   assert.equal(args[args.indexOf('-f') + 1], 'mpegts');
   assert.ok(!args.includes('-use_wallclock_as_timestamps'));
 });
+
+test('focus and locks reach the camera server only when set; 3A reports are always on', () => {
+  const plain = androidServerOptions(android, 0);
+  assert.ok(plain.includes('camera_3a_report=true'));
+  assert.ok(!plain.some((o) => /camera_(focus|ae_lock|awb_lock)/.test(o)));
+  const o = androidServerOptions({ ...android, focus: 0, exposureLock: true, whiteBalanceLock: true }, 0);
+  assert.ok(o.includes('camera_focus=0') && o.includes('camera_ae_lock=true') && o.includes('camera_awb_lock=true'));
+});

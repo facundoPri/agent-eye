@@ -143,3 +143,27 @@ test('preview sessions deliver frames on stdout and stop cleanly', () => inFakes
   await waitFor(() => bytes > 0, 2000, 'frames');
   assert.equal((await session.stop()).code, 0);
 }));
+
+test('the summary says what the phone focus did and warns when autofocus moved', { timeout: 10000 }, () => inFakes(async () => {
+  fakes.adb({ report3a: ['focus=0.1 af_mode=3 af_state=1', 'focus=4 focus_min=0.1 focus_max=4 af_mode=3 af_state=2',
+    'focus=4 focus_min=4 focus_max=4 af_mode=3 af_state=2', 'focus=3 focus_min=3 focus_max=4.2 af_mode=3 af_state=2'] });
+  const s = await recordToFile(ANDROID_PROFILE, out('af.mp4'), { durationSec: 0.6 });
+  assert.equal(s.camera.focus.mode, 'auto');
+  assert.ok(s.camera.reports >= 2);
+  assert.ok(s.warnings.some((w) => /Autofocus refocused/.test(w)), JSON.stringify(s.warnings));
+  assert.ok(s.camera.focus.settledAtMs >= s.startedAtMs);
+  assert.deepEqual(JSON.parse(readFileSync(out('af.json'), 'utf8')).camera, s.camera);
+}));
+
+test('a recording starts once focus has settled and the exposure lock is on', { timeout: 10000 }, () => inFakes(async () => {
+  const before = 'focus=2 af_mode=0 lens_state=0 ae_lock=false';
+  fakes.adb({ report3a: [before, before, before, before, before, before, 'locked ae=true awb=false', 'focus=2 af_mode=0 lens_state=0 ae_lock=true'] });
+  let startedAfterLock = null;
+  const s = await recordToFile({ ...ANDROID_PROFILE, focus: 2, exposureLock: true }, out('lock.mp4'),
+    { durationSec: 0.3, onStarted: (t) => { startedAfterLock = Date.now() - t; } });
+  assert.ok(startedAfterLock >= 250, `started ${startedAfterLock} ms after the first frames, before the lock`);
+  assert.equal(s.camera.exposure.locked, true);
+  assert.ok(s.camera.exposure.lockedAtMs >= s.startedAtMs);
+  assert.equal(s.camera.focus.mode, 'fixed');
+  assert.deepEqual(s.warnings, []);
+}));

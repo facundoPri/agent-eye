@@ -73,7 +73,14 @@ if (rest[0] === 'shell' && rest.includes('list_cameras=true')) {
   console.log('[server] INFO: List of cameras:\\n    --camera-id=0    (back, 1920x1080, fps={15, 30, 60})\\n        - 1920x1080\\n        - 1280x720');
   process.exit(0);
 }
-if (rest[0] === 'shell') { mark('adbserver'); console.log('[server] INFO: Device: fake'); setInterval(() => {}, 1000); return; }
+if (rest[0] === 'shell') {
+  mark('adbserver'); console.log('[server] INFO: Device: fake');
+  // c.report3a: lines the camera server prints, one every 50 ms, the last one repeated (see camera3a.js).
+  // By default autofocus has already settled, as on a real phone a moment after the camera opens.
+  const lines = c.report3a ?? ['focus=4 af_mode=3 af_state=2 lens_state=0']; let i = 0;
+  setInterval(() => { if (lines.length) console.log('[server] INFO: agent-eye-3a: ' + lines[Math.min(i++, lines.length - 1)]); }, 50);
+  return;
+}
 process.exit(1);
 `;
 

@@ -1,4 +1,16 @@
-vendor/scrcpy-server-v4.1.jar is the unmodified scrcpy server, version 4.1,
+vendor/scrcpy-server-v4.1-agent-eye.jar is the scrcpy server, version 4.1,
 copyright Genymobile, licensed under the Apache License 2.0
-(https://github.com/Genymobile/scrcpy). It is pushed to the phone to read the
-camera over adb. Agent Eye talks to it directly and does not need scrcpy installed.
+(https://github.com/Genymobile/scrcpy), modified for Agent Eye.
+It is pushed to the phone to read the camera over adb. Agent Eye talks to it
+directly and does not need scrcpy installed.
+
+Modifications (vendor/scrcpy-camera-controls.patch, applied to tag v4.1;
+scripts/build-server.sh rebuilds the jar):
+- camera_focus=<diopters>: autofocus off, lens held at a fixed distance.
+- camera_ae_lock / camera_awb_lock: lock auto exposure / white balance once
+  they have settled (camera_lock_delay_ms, default 1500 ms).
+- camera_3a_report: about twice a second, one log line with the lens focus
+  distance (and its range over every frame since the last line), autofocus,
+  exposure and white balance state.
+- list_cameras also prints each camera's manual focus range and 3A locks.
+The server protocol is unchanged.

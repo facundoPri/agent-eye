@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { findBin, run, UserError } from './util.js';
 
 export const SCRCPY_VERSION = '4.1';
-export const SERVER_JAR = join(dirname(fileURLToPath(import.meta.url)), '..', 'vendor', `scrcpy-server-v${SCRCPY_VERSION}.jar`);
+// scrcpy's server with agent-eye's camera controls (focus, 3A locks and reports); see vendor/NOTICE.
+export const SERVER_JAR = join(dirname(fileURLToPath(import.meta.url)), '..', 'vendor', `scrcpy-server-v${SCRCPY_VERSION}-agent-eye.jar`);
 export const REMOTE_JAR = '/data/local/tmp/agent-eye-server.jar';
 
 // ---------------------------------------------------------------- Mac cameras
@@ -81,6 +82,9 @@ export function parseAndroidCameras(text) {
         id: Number(head[1]), facing: head[2], maxSize: head[3],
         fps: head[4].split(',').map((s) => Number(s.trim())).filter(Boolean),
         zoomRange: head[5] ? [Number(head[5]), Number(head[6])] : [1, 1],
+        // Reported by agent-eye's build of the server (see vendor/NOTICE): manual focus in diopters, and 3A locks.
+        focusRange: (() => { const f = line.match(/focus-range=\[([\d.]+), ([\d.]+)\]/); return f ? [Number(f[1]), Number(f[2])] : null; })(),
+        locks: line.match(/locks=([\w+]+)/)?.[1].split('+') ?? [],
         sizes: [], highSpeed: [],
       };
       cams.push(cam); highSpeed = false;
@@ -134,7 +138,7 @@ export async function listDevices({ capabilities = false } = {}) {
       const cams = await androidCameras(ph.serial);
       for (const c of cams) {
         devices.push({ id: `android:${ph.serial}/${c.id}`, kind: 'android', serial: ph.serial, cameraId: c.id,
-          name: `${ph.model} (${c.facing})`, ...(capabilities ? { caps: c } : { maxSize: c.maxSize, fps: c.fps, zoomRange: c.zoomRange, highSpeed: c.highSpeed }) });
+          name: `${ph.model} (${c.facing})`, ...(capabilities ? { caps: c } : { maxSize: c.maxSize, fps: c.fps, zoomRange: c.zoomRange, highSpeed: c.highSpeed, focusRange: c.focusRange, locks: c.locks }) });
       }
     } catch (e) {
       problems.push({ serial: ph.serial, state: ph.state, model: ph.model, hint: e.message });

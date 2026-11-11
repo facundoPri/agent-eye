@@ -26,6 +26,11 @@ timestamp, passed to ffmpeg as MPEG-TS), not the time it reached the Mac: at 60 
 the median, shortest and longest interval and how many are off by more than half the median; more
 than 1 % adds a warning.
 
+Android summaries also say what the phone camera did while recording (`camera`): where the lens was
+focused (diopters and cm; the range covers every frame), whether exposure and white balance were
+locked, exposure time and ISO. A warning is added when autofocus refocused during the recording or
+a fixed focus did not hold, which is the usual cause of blurred takes. See **Focus and exposure**.
+
 A recording only counts when ffmpeg finished the file and `ffprobe` can read frames from it.
 Otherwise `record` / `stop` exit with code 3 ("Recording failed"), the incomplete file is left
 where it was and no `.json` is written; a `.json` left by an earlier take of the same file is
@@ -105,7 +110,10 @@ the framing.
   "zoom": 2,
   "crop": { "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 },
   "rotate": 0,
-  "bitrate": 30
+  "bitrate": 30,
+  "focus": 4.25,
+  "exposureLock": true,
+  "whiteBalanceLock": true
 }
 ```
 
@@ -113,6 +121,31 @@ the framing.
 - `crop`: digital zoom and pan, as fractions of the (rotated) frame. Forces a re-encode.
 - `rotate`: 0, 90, 180, 270. Applied before `crop`.
 - `bitrate`: Mbit/s. Default 20, or 40 above 60 fps.
+- `focus` (optional, Android): a fixed focus distance in diopters, 1/metres (4 = 25 cm, 0 =
+  infinity). Absent or `"auto"`: continuous autofocus.
+- `exposureLock`, `whiteBalanceLock` (optional, Android): lock them once the camera has metered
+  the scene. Absent: automatic.
+
+### Focus and exposure
+
+By default the phone uses continuous autofocus and automatic exposure and white balance, like
+its camera app. That is fine for watching, but bad for measuring: when the scene changes a lot (a
+screen flashing), autofocus searches again and blurs frames, and exposure shifts the brightness of
+the whole frame for 1-2 s.
+
+To keep them still, open `agent-eye preview`, let autofocus find the subject, press **Fix focus
+here** (or pick Focus: Fixed distance and set it), tick **Lock exposure** / **Lock white
+balance**, and confirm. From the terminal: `agent-eye configure --set '{"focus": 4.25, ...}'`.
+`agent-eye devices --caps` shows each camera's `focusRange` and `locks`; a profile asking for
+something the camera cannot do is refused. On the tested phone (Motorola edge 40 pro, back camera)
+fixed focus and both locks hold at 30, 60, 120 and 240 fps.
+
+- A fixed focus is the same in every take. The locks are taken anew at each start, about 1.5 s
+  after the camera opens, on what it sees then: start with the scene in its resting state.
+- With autofocus, the camera searches for about 1.5 s when it opens. `record` and `start` count
+  as started only once focus has settled and the locks are on, so what happens after `start`
+  returns is filmed in focus; the file itself begins with that search (`camera.focus.settledAtMs`,
+  host clock, says when it ended).
 
 A config holds several named profiles and one default, used when a command has no `--profile`.
 `configure --set JSON --name hs240` (or `--profile hs240`, or `"name": "hs240"` in the JSON)
@@ -143,12 +176,11 @@ cancels it (exit 1, nothing recorded). The worker's log is `.agent-eye/worker.lo
 - Phone zoom changes restart the preview (about a second); digital zoom is instant.
 - High frame rates depend on the phone's encoder. Check `measuredFps` in the summary; a warning
   is added when it falls under 90 % of what you asked for.
-- Exposure and white balance on the phone are automatic and cannot be locked: scrcpy 4.1, which
-  runs the phone camera, has no option for AE/AWB lock or manual exposure and ISO, even on phones
-  that support them. A large change in what the camera sees (a screen flashing black) shifts the
-  brightness of the whole frame for 1-2 s. To measure brightness, normalise against a fixed
-  region outside the subject. Agent Eye's crop is applied on the Mac and does not change what
-  the camera meters.
+- Without `exposureLock`, exposure on the phone is automatic: a large change in what the camera
+  sees (a screen flashing black) shifts the brightness of the whole frame for 1-2 s. Manual
+  exposure time and ISO are not offered; a lock keeps whatever the camera chose at start. To
+  measure brightness, lock exposure and still normalise against a fixed region outside the
+  subject. Agent Eye's crop is applied on the Mac and does not change what the camera meters.
 - Frames reach the Mac a moment after they are captured, so `stop` misses the last instant before
   it runs. When the last event matters, use `stop --tail 1` (or start the sequence after
   `start` returns and leave a second at the end).
@@ -163,4 +195,7 @@ The tests use fake `ffmpeg`, `ffprobe` and `adb` programs and a fake phone tunne
 `test/helpers/fakes.js`); they never open a camera. Real capture still needs checking by hand on
 the hardware listed above.
 
-`vendor/scrcpy-server-v4.1.jar` is the unmodified scrcpy server (Apache-2.0, see `vendor/NOTICE`).
+`vendor/scrcpy-server-v4.1-agent-eye.jar` is the scrcpy 4.1 server (Apache-2.0) with
+`vendor/scrcpy-camera-controls.patch` applied: manual focus, exposure and white balance locks, and
+the 3A reports behind `camera` in the summary (see `vendor/NOTICE`). `scripts/build-server.sh`
+rebuilds it (git, JDK 17, Android SDK platform 36 and build-tools 36.0.0).

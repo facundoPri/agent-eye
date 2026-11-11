@@ -30,7 +30,7 @@ async function readJson(req) {
 
 const conflict = (message) => Object.assign(new UserError(message), { status: 409 });
 // Settings that change the picture: a confirmation still must come from a preview opened with all of them.
-const IMAGE_KEYS = ['source', 'width', 'height', 'fps', 'zoom', 'rotate'];
+const IMAGE_KEYS = ['source', 'width', 'height', 'fps', 'zoom', 'rotate', 'focus', 'exposureLock', 'whiteBalanceLock'];
 
 /**
  * Local web UI for configuring and previewing a camera.
@@ -92,6 +92,11 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
     return state;
   }
   const stopRequested = () => { latestRequest++; return serial(stopPreview); };
+  /** Where the phone lens is focused right now (diopters) and whether the locks are on; null for Mac cameras. */
+  const liveCamera = (p) => {
+    const r = p.session.camera3a?.latest();
+    return r ? { focus: r.focus ?? null, autofocus: r.af_mode !== 0, aeLock: r.ae_lock === true, awbLock: r.awb_lock === true } : null;
+  };
 
   const route = {
     'GET /api/state': async () => ({ mode, configPath, config: cfg, profileName: profileName ?? cfg.default ?? null,
@@ -101,7 +106,7 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
     'POST /api/preview/start': async (body) => { const s = await startPreview(body.profile); return { id: s.id }; },
     'POST /api/preview/stop': async () => { await stopRequested(); return { ok: true }; },
     'GET /api/preview/stats': async () => preview ? { id: preview.id, frames: preview.frames, sinceMs: Date.now() - preview.startedAt,
-      fps: preview.frames / Math.max((Date.now() - preview.startedAt) / 1000, 0.001) } : { id: null, frames: 0, fps: 0 },
+      fps: preview.frames / Math.max((Date.now() - preview.startedAt) / 1000, 0.001), camera: liveCamera(preview) } : { id: null, frames: 0, fps: 0 },
     'POST /api/save': async (body) => {
       const profile = normalizeProfile(body.profile);
       if (!deviceCache) deviceCache = await listDevices({ capabilities: true });
