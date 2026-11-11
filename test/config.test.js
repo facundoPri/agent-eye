@@ -67,3 +67,19 @@ test('findConfigPath walks up from a subdirectory', () => {
   assert.equal(findConfigPath(join(root, 'a', 'b')), join(root, '.agent-eye', 'config.json'));
   assert.equal(findConfigPath(tmpdir()), null);
 });
+
+test('focus and 3A locks: optional, Android only', () => {
+  const p = normalizeProfile({ ...good, focus: 2.5, exposureLock: true, whiteBalanceLock: false });
+  assert.equal(p.focus, 2.5); assert.equal(p.exposureLock, true); assert.equal('whiteBalanceLock' in p, false);
+  assert.equal('focus' in normalizeProfile({ ...good, focus: 'auto' }), false);
+  assert.equal('focus' in normalizeProfile(good), false);
+  assert.throws(() => normalizeProfile({ ...good, focus: -1 }), /focus must be "auto" or a fixed distance in diopters/);
+  assert.throws(() => normalizeProfile({ ...good, exposureLock: 'yes' }), /exposureLock must be true or false/);
+  assert.throws(() => normalizeProfile({ ...good, source: 'mac:Cam', focus: 2 }), /only available on Android/);
+});
+
+test('focusRegion: optional, inside the frame, Android only', () => {
+  assert.deepEqual(normalizeProfile({ ...good, focusRegion: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 } }).focusRegion, { x: 0.1, y: 0.1, w: 0.2, h: 0.2 });
+  assert.throws(() => normalizeProfile({ ...good, focusRegion: { x: 0.9, y: 0, w: 0.2, h: 0.2 } }), /focusRegion/);
+  assert.throws(() => normalizeProfile({ ...good, source: 'mac:Cam', focusRegion: { x: 0, y: 0, w: 1, h: 1 } }), /only available on Android/);
+});

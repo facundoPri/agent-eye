@@ -4,7 +4,7 @@ description: Camera through the agent-eye CLI. Use to record or film a video of 
 ---
 
 The human owns the framing; the agent records with it. A **profile** (camera, resolution,
-fps, zoom, crop) is chosen in the browser by the human and saved in `.agent-eye/config.json`.
+fps, zoom, crop, focus, exposure lock) is chosen in the browser by the human and saved in `.agent-eye/config.json`.
 Commands and flags: `agent-eye help`. Run as `agent-eye` if it is on PATH, otherwise
 `npx agent-eye`. Output is JSON when piped.
 
@@ -41,6 +41,21 @@ Commands and flags: `agent-eye help`. Run as `agent-eye` if it is on PATH, other
 profile's fps. Report that number, never the requested one. Frame times are capture times;
 `frameIntervalMs` shows their spacing, and a warning says when it is irregular.
 
-Brightness is not a measurement: the phone's auto exposure cannot be locked and shifts the
-whole frame for 1-2 s after a big change in the scene. When analysing luminance, normalise
-each frame against a fixed region outside the subject.
+**Focus.** An Android summary has `camera.focus` (where the lens was, `mode` auto or fixed). A
+warning saying autofocus refocused, or a fixed focus did not hold, means frames may be blurred:
+report it and do not use those frames for measurements. The fix is a fixed focus in the profile.
+When asked to (or when the human approved changing the profile), you can do it yourself:
+
+- `agent-eye focus scan --region x,y,w,h`: autofocus once on that part of the picture (fractions
+  of the snapshot) and fix the focus there. `agent-eye focus auto` / `agent-eye focus 4.25`.
+- `agent-eye frame --region x,y,w,h`: frame that part (camera zoom first, then a centred crop)
+  and focus on it. Read its `notes`, then take a snapshot to check.
+- `agent-eye configure --update '{"exposureLock": true}'`: change single fields (`null` removes).
+
+Use `--profile <name>` on a profile of your own unless asked to change the human's. With autofocus the first ~1.5 s of the file are the camera searching
+(`camera.focus.settledAtMs`); `start` returns after that.
+
+**Brightness** is not a measurement unless `camera.exposure.locked` is true: auto exposure shifts
+the whole frame for 1-2 s after a big change in the scene. Locks engage about 1.5 s after the
+camera opens (`lockedAtMs`), on the scene at that moment. When analysing luminance, normalise each
+frame against a fixed region outside the subject anyway.

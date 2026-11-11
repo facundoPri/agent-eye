@@ -69,11 +69,31 @@ export function normalizeProfile(input) {
     if (!isNum(p.bitrate) || p.bitrate < 1 || p.bitrate > 200) errors.push('bitrate (Mbit/s) must be between 1 and 200');
     else out.bitrate = p.bitrate;
   }
+  // Phone camera controls. Absent = automatic (continuous autofocus, auto exposure and white balance).
+  if (p.focus !== undefined && p.focus !== null && p.focus !== 'auto') {
+    if (!isNum(p.focus) || p.focus < 0 || p.focus > 50) errors.push('focus must be "auto" or a fixed distance in diopters (1/metres: 4 = 25 cm, 0 = infinity)');
+    else out.focus = p.focus;
+  }
+  // Where autofocus looks (when focus is automatic) and where a focus scan measures: view coordinates, like crop.
+  if (p.focusRegion !== undefined && p.focusRegion !== null) {
+    const { x: fx, y: fy, w: fw, h: fh } = p.focusRegion;
+    if (![fx, fy, fw, fh].every(isNum) || fw <= 0 || fh <= 0 || fx < -0.0001 || fy < -0.0001 || fx + fw > 1.0001 || fy + fh > 1.0001) {
+      errors.push('focusRegion must be {x,y,w,h} as fractions of the frame (before the crop), inside it');
+    } else out.focusRegion = { x: fx, y: fy, w: fw, h: fh };
+  }
+  for (const k of ['exposureLock', 'whiteBalanceLock']) {
+    if (p[k] === undefined || p[k] === false) continue;
+    if (p[k] !== true) errors.push(`${k} must be true or false`);
+    else out[k] = true;
+  }
   if (p.note !== undefined) out.note = String(p.note).slice(0, 500);
 
   if (errors.length) throw new UserError(`Invalid profile:\n  - ${errors.join('\n  - ')}`, { code: 2 });
   if (out.source?.startsWith('mac:') && out.zoom !== 1) {
     throw new UserError('Native zoom is only available on Android cameras. For a Mac camera use "crop".', { code: 2 });
+  }
+  if (out.source?.startsWith('mac:') && (out.focus !== undefined || out.focusRegion || out.exposureLock || out.whiteBalanceLock)) {
+    throw new UserError('focus, focusRegion, exposureLock and whiteBalanceLock are only available on Android cameras.', { code: 2 });
   }
   return out;
 }

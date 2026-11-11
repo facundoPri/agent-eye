@@ -59,8 +59,9 @@ test('slow motion options: high speed above 60 fps, encoder rate above 120', () 
   assert.ok(hs240.includes('video_bit_rate=40000000'));
 });
 
-test('native zoom is sent only above 1x; bitrate override wins', () => {
+test('native zoom is sent unless 1x (below 1x too: the ultrawide); bitrate override wins', () => {
   assert.ok(!androidServerOptions(android, 0).some((o) => o.startsWith('camera_zoom')));
+  assert.ok(androidServerOptions({ ...android, zoom: 0.61 }, 4).includes('camera_zoom=0.61'));
   const o = androidServerOptions({ ...android, zoom: 2.5, bitrate: 12 }, 1);
   assert.ok(o.includes('camera_zoom=2.5') && o.includes('camera_id=1') && o.includes('video_bit_rate=12000000'));
 });
@@ -72,4 +73,18 @@ test('Android input keeps the phone capture timestamps, not arrival times', () =
   const args = inputArgs(android);
   assert.equal(args[args.indexOf('-f') + 1], 'mpegts');
   assert.ok(!args.includes('-use_wallclock_as_timestamps'));
+});
+
+test('focus and locks reach the camera server only when set; 3A reports are always on', () => {
+  const plain = androidServerOptions(android, 0);
+  assert.ok(plain.includes('camera_3a_report=true'));
+  assert.ok(!plain.some((o) => /camera_(focus|ae_lock|awb_lock)/.test(o)));
+  const o = androidServerOptions({ ...android, focus: 0, exposureLock: true, whiteBalanceLock: true }, 0);
+  assert.ok(o.includes('camera_focus=0') && o.includes('camera_ae_lock=true') && o.includes('camera_awb_lock=true'));
+});
+
+test('the focus region reaches the camera in its own (unrotated) coordinates; live commands are on', () => {
+  const o = androidServerOptions({ ...android, rotate: 90, focusRegion: { x: 0.8, y: 0.1, w: 0.2, h: 0.3 } }, 0);
+  assert.ok(o.includes('camera_commands=true'));
+  assert.ok(o.includes('camera_af_region=0.1,0,0.3,0.2'), o.join(' '));
 });

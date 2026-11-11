@@ -4,6 +4,7 @@ import { findBin, raceTimer, run, UserError } from './util.js';
 import { cropFilter, previewOutputArgs, recordOutputArgs, canStreamCopy } from './ffargs.js';
 import { JpegSplitter } from './mjpeg.js';
 import { cancelledError, startSession } from './session.js';
+import { summarize3a } from './camera3a.js';
 
 /**
  * Probe a finished recording. measuredFps comes from packet count over duration, not from what was requested.
@@ -72,7 +73,7 @@ export async function recordToFile(profile, outPath, { durationSec, signal, onSt
   const out = resolve(outPath);
   mkdirSync(dirname(out), { recursive: true });
   rmSync(sidecarPath(out), { force: true }); // a summary left from an earlier take must not describe this one
-  const session = await startSession(profile, recordOutputArgs(profile, out), { signal, startTimeoutMs });
+  const session = await startSession(profile, recordOutputArgs(profile, out), { signal, startTimeoutMs, waitReady: true });
   let timer, finish;
   const ended = new Promise((res) => { finish = res; });
   try {
@@ -95,7 +96,10 @@ export async function recordToFile(profile, outPath, { durationSec, signal, onSt
       startedAtMs: startedAt, stoppedAtMs: stoppedAt, // host clock: use these to line up video with other logs
       ...probe,
     };
-    summary.warnings = [];
+    // What focus, exposure and white balance did while recording (Android only).
+    const cam = session.camera3a && summarize3a(session.camera3a, profile, { fromMs: startedAt, toMs: stoppedAt });
+    if (cam) summary.camera = cam.camera;
+    summary.warnings = [...(cam?.warnings ?? [])];
     if (!probe) summary.warnings.push('ffprobe is not installed: the file was not checked and frames/fps are unknown.');
     if (probe?.unchecked) summary.warnings.push(`${probe.unchecked}: the file was not checked and frames/fps are unknown.`);
     if (probe?.measuredFps && probe.measuredFps < profile.fps * 0.9) {
@@ -127,11 +131,12 @@ export async function cropJpeg(jpeg, crop) {
   });
 }
 
-/** One full-resolution still with the profile's framing applied. Waits so exposure and focus settle. */
-export async function takeSnapshot(profile, outPath, { warmupMs = 2000, signal } = {}) {
+/** One full-resolution still with the profile's framing applied, taken once focus and exposure have settled. */
+export async function takeSnapshot(profile, outPath, { warmupMs = 700, signal } = {}) {
   let latest = null, frames = 0;
   const splitter = new JpegSplitter((f) => { latest = Buffer.from(f); frames += 1; });
-  const session = await startSession(profile, previewOutputArgs(profile, { width: 0, fps: 5, quality: 2, applyCrop: true }), { onStdout: (d) => splitter.push(d), signal });
+  const session = await startSession(profile, previewOutputArgs(profile, { width: 0, fps: 5, quality: 2, applyCrop: true }), { onStdout: (d) => splitter.push(d), signal, waitReady: true });
+  // after focus and exposure settled (waitReady), a few frames more so the still is one taken after that
   const waited = Date.now();
   while ((Date.now() - waited < warmupMs || frames < 3) && Date.now() - waited < warmupMs + 6000 && !signal?.aborted) {
     if (await Promise.race([session.closed, raceTimer(100).then(() => null)])) break;

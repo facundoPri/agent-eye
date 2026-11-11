@@ -17,7 +17,7 @@
   [hidden], .hidden { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
   :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-  #fpsStat, #cropStat, b { font-variant-numeric:tabular-nums; }
+  #fpsStat, #cropStat, #focusStat, b { font-variant-numeric:tabular-nums; }
 
   #app { display:grid; grid-template-columns:minmax(0,1fr) 360px; height:100vh; height:100dvh; }
 
@@ -75,8 +75,17 @@
   .check { flex-direction:row; align-items:center; gap:8px; color:var(--fg); height:34px; align-self:end; cursor:pointer; }
   .check input { accent-color:var(--accent); margin:0; }
   .hint { color:var(--dim); font-size:12px; }
+  #frameNote { white-space:pre-wrap; }
   .hint.warn { color:var(--warn); }
   .hint:empty { display:none; }
+  .focusrow { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:end; }
+  #sel { position:absolute; display:none; border:1.5px solid var(--accent); background:#4da3ff22; pointer-events:none; }
+  #afBox { position:absolute; display:none; border:1.5px dashed #ffdf5e; border-radius:3px; pointer-events:none; }
+  .lensbar { display:flex; gap:6px; flex-wrap:wrap; }
+  .lensbar button { height:26px; padding:0 9px; font-size:12px; background:transparent; color:var(--dim); border:1px solid var(--line-strong); border-radius:99px; }
+  .lensbar button:hover:not(:disabled) { color:var(--fg); background:var(--raised); }
+  .lensbar button.on { color:var(--on-accent); background:var(--accent); border-color:var(--accent); }
+  .row2 { display:flex; gap:8px; flex-wrap:wrap; }
 
   details.adv summary { cursor:pointer; color:var(--dim); font-size:12px; list-style:none; display:flex; align-items:center; gap:6px; width:max-content; border-radius:4px; }
   details.adv summary::-webkit-details-marker { display:none; }
@@ -137,11 +146,11 @@
 <main>
   <header><h1>Agent Eye</h1><span id="modeLabel"></span></header>
   <div id="stage">
-    <div id="frame"><img id="view" alt="Camera preview"><div id="grid"></div><div id="cross"></div></div>
+    <div id="frame"><img id="view" alt="Camera preview"><div id="grid"></div><div id="cross"></div><div id="afBox" title="Focus area"></div><div id="sel"></div></div>
     <div id="msg" class="busy">Loading cameras…</div>
-    <div id="chips"><span id="fpsStat"></span><span id="cropStat"></span></div>
+    <div id="chips"><span id="fpsStat"></span><span id="cropStat"></span><span id="focusStat"></span><span id="lensStat"></span></div>
   </div>
-  <div class="caption"><span id="outStat"></span><span class="tip">Click the preview to re-center · scroll to zoom</span></div>
+  <div class="caption"><span id="outStat"></span><span class="tip">Drag to frame a part · click to re-center · scroll to zoom</span></div>
 </main>
 <aside>
   <div class="scroll">
@@ -157,8 +166,12 @@
     </section>
     <section class="group">
       <h2>Framing</h2>
-      <label id="zoomRow" class="field slider">Camera zoom <b id="zoomV">1.0×</b><input id="zoom" type="range" min="1" max="10" step="0.1" value="1"></label>
-      <label class="field slider">Digital zoom <b id="dzV">1.0×</b><input id="dz" type="range" min="1" max="8" step="0.05" value="1"></label>
+      <div id="lensRow" class="field hidden">Lens<div id="lensBar" class="lensbar" role="group" aria-label="Lens"></div></div>
+      <label class="field slider">Zoom <b id="zoomV">1.00×</b><input id="zoom" type="range" min="0" max="3" step="0.01" value="0"></label>
+      <div id="zoomParts" class="hint"></div>
+      <div id="lensWarn" class="hint warn"></div>
+      <div id="frameNote" class="hint"></div>
+      <div id="bestRow" class="row2 hidden"><button id="useBest" class="quiet"></button></div>
       <div id="centerRow" class="row">
         <label class="field slider">Center X <b id="cxV">50%</b><input id="cx" type="range" min="0" max="1" step="0.005" value="0.5"></label>
         <label class="field slider">Center Y <b id="cyV">50%</b><input id="cy" type="range" min="0" max="1" step="0.005" value="0.5"></label>
@@ -167,6 +180,21 @@
         <label class="field">Rotate <select id="rotate"><option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>
         <label class="field check"><input id="showGrid" type="checkbox"> Grid and center mark</label>
       </div>
+    </section>
+    <section class="group" id="lensGroup" hidden>
+      <h2>Focus and exposure</h2>
+      <div class="focusrow">
+        <label class="field">Focus <select id="focusMode"><option value="auto">Auto (continuous)</option><option value="fixed">Fixed distance</option></select></label>
+        <button id="focusHere" class="quiet" disabled title="Autofocus once on the focus area (or the framed picture) and fix the focus there">Focus on frame</button>
+      </div>
+      <label id="focusRow" class="field slider hidden">Focus distance <b id="focusV">∞</b><input id="focus" type="range" min="0" max="10" step="0.05" value="0"></label>
+      <div id="focusNote" class="hint">Autofocus refocuses when the scene changes (a flashing screen) and can blur frames. A fixed distance keeps the lens still.</div>
+      <div id="regionRow" class="row2 hidden"><span class="hint">Autofocus looks at the dashed area.</span><button id="clearRegion" class="quiet">Clear focus area</button></div>
+      <div id="lockRow" class="row">
+        <label class="field check"><input id="aeLock" type="checkbox"> Lock exposure</label>
+        <label class="field check"><input id="awbLock" type="checkbox"> Lock white balance</label>
+      </div>
+      <div id="lockNote" class="hint hidden">Locked about 1.5 s after the camera starts, on what it sees then.</div>
     </section>
     <details class="adv" id="advanced">
       <summary>Advanced</summary>
@@ -199,7 +227,14 @@ const api = async (path, body) => {
   return j;
 };
 const SIZES_MAC = ['1920x1080', '1280x720', '640x480'];
-let devices = [], state = null, macModes = {}, restartTimer = null, previewId = null, previewAt = 0;
+// Framing model: one zoom (`zoomE`, relative to the main lens's 1x view, so the same number means the same
+// framing on every lens) and a center (cx, cy: fractions of this camera's 1x view). From them, allocate()
+// takes as much camera zoom as keeps the center (and the focus) possible, and crops the rest digitally.
+let zoomE = 1, cameraZoomSent = null, bestLens = null, pendingFrame = null;
+// A fixed focus closer than the lens chosen can reach is clamped to its nearest; this remembers the distance
+// asked for, to warn about it and to restore it on a lens that can.
+let focusWanted = null;
+let devices = [], state = null, liveFocus = null, liveLens = null, focusRegion = null, zoomShown = 1, macModes = {}, restartTimer = null, previewId = null, previewAt = 0;
 // The saved crop, kept exactly (any shape, any zoom) until the person touches the framing controls,
 // which can only express crops with the frame's proportions and up to 8x.
 let keptCrop = null;
@@ -238,20 +273,63 @@ function fillSelect(sel, values, keep, labeler = String) {
 }
 const prettySize = (s) => ({ '3840x2160': '3840x2160 (4K)', '1920x1080': '1920x1080 (FHD)', '1280x720': '1280x720 (HD)' }[s] ?? s);
 
-function controlsCrop() {
-  const dz = +$('dz').value, w = 1 / dz;
-  const x = Math.min(Math.max(+$('cx').value - w / 2, 0), 1 - w), y = Math.min(Math.max(+$('cy').value - w / 2, 0), 1 - w);
-  const r = (n) => Math.round(n * 10000) / 10000;
-  return dz > 1 ? { x: r(x), y: r(y), w: r(w), h: r(w) } : { x: 0, y: 0, w: 1, h: 1 };
+/** The camera's 1x view, compared with the main lens (a telephoto opened on its own starts at its zoom). */
+function baseZoom(dev = device()) {
+  const c = dev?.caps;
+  const own = c?.lensId != null && c.lenses?.find((l) => l.id === c.lensId);
+  return own ? own.zoom : 1;
 }
-const currentCrop = () => keptCrop ?? controlsCrop();
+const zoomRange = (dev = device()) => (dev?.kind === 'android' ? dev.caps.zoomRange : [1, 1]);
+const MAX_DIGITAL = 8;
+/** The lens that cannot reach a fixed focus, for the logical camera: stay below where it switches in. */
+function focusCap() {
+  const c = device()?.caps;
+  if (!c?.lenses || c.lensId != null || $('focusMode').value !== 'fixed') return Infinity;
+  const want = +$('focus').value;
+  const bad = c.lenses.filter((l) => l.zoom > 1.2 && l.nearest > 0 && l.nearest < want - 0.05).map((l) => l.zoom);
+  // ~12% below the lens's zoom: the camera keeps a lens a little below its switch point when zooming out
+  return bad.length ? Math.round(Math.min(...bad) * 0.88 * 100) / 100 : Infinity;
+}
+/**
+ * Split the zoom: as much camera zoom as keeps the center in the middle of the picture (the camera's zoom is
+ * centred on the sensor) and the subject in focus, the rest a digital crop centred on (cx, cy).
+ */
+function allocate() {
+  const [zmin, zmax] = zoomRange(), T = zoomE / baseZoom();
+  const cx = +$('cx').value, cy = +$('cy').value, side1 = 1 / T;
+  const geo = 0.5 / (Math.max(Math.abs(cx - 0.5), Math.abs(cy - 0.5)) + Math.min(side1, 1) / 2);
+  let z = Math.min(T, geo, focusCap());
+  const limitedBy = z >= T - 0.005 ? null : z === focusCap() ? 'focus' : 'centre';
+  z = Math.round(Math.min(Math.max(z, zmin), zmax) * 100) / 100;
+  const side = Math.min(1, side1 * z);
+  const r = (n) => Math.round(n * 10000) / 10000;
+  if (side >= 0.999) return { z, crop: { x: 0, y: 0, w: 1, h: 1 }, digital: 1, limitedBy };
+  const x = Math.min(Math.max(0.5 + (cx - 0.5) * z - side / 2, 0), 1 - side), y = Math.min(Math.max(0.5 + (cy - 0.5) * z - side / 2, 0), 1 - side);
+  return { z, crop: { x: r(x), y: r(y), w: r(side), h: r(side) }, digital: Math.round(100 / side) / 100, limitedBy };
+}
+/** Set the zoom and center from a camera zoom and crop (a saved profile, or a framing result). */
+function fromProfile(z, crop) {
+  const c = crop && !isFull(crop) ? crop : { x: 0, y: 0, w: 1, h: 1 };
+  const side = Math.max(c.w, c.h);
+  zoomE = baseZoom() * z / side;
+  $('cx').value = 0.5 + (c.x + c.w / 2 - 0.5) / z; $('cy').value = 0.5 + (c.y + c.h / 2 - 0.5) / z;
+  $('zoom').value = Math.log2(zoomE);
+}
+const currentCrop = () => keptCrop ?? allocate().crop;
 const isFull = (c) => c.x === 0 && c.y === 0 && c.w === 1 && c.h === 1;
 
 function currentProfile() {
   const [width, height] = $('size').value.split('x').map(Number);
-  const p = { source: $('camera').value, width, height, fps: +$('fps').value, zoom: +$('zoom').value,
+  const p = { source: $('camera').value, width, height, fps: +$('fps').value, zoom: keptCrop ? zoomShown : allocate().z,
     crop: { ...currentCrop() }, rotate: +$('rotate').value };
   if ($('bitrate').value) p.bitrate = +$('bitrate').value;
+  if (device()?.kind === 'android') {
+    const c = device().caps;
+    if (c.focusRange && $('focusMode').value === 'fixed') p.focus = +$('focus').value;
+    if (c.locks?.includes('ae') && $('aeLock').checked) p.exposureLock = true;
+    if (c.locks?.includes('awb') && $('awbLock').checked) p.whiteBalanceLock = true;
+    if (c.afRegions && focusRegion) p.focusRegion = { ...focusRegion };
+  }
   return p;
 }
 
@@ -259,15 +337,25 @@ function applyView() {
   const c = currentCrop();
   fitFrame();
   $('view').style.transform = `scale(${1 / c.w}, ${1 / c.h}) translate(${-c.x * 100}%, ${-c.y * 100}%)`;
-  $('zoomV').textContent = (+$('zoom').value).toFixed(1) + '×';
-  $('dzV').textContent = c.w === c.h ? (1 / c.w).toFixed(2) + '×' : 'saved crop';
-  $('cxV').textContent = Math.round((c.x + c.w / 2) * 100) + '%'; $('cyV').textContent = Math.round((c.y + c.h / 2) * 100) + '%';
-  $('centerRow').classList.toggle('dim', isFull(c)); // the center only matters once the picture is cropped
+  const a = allocate(), zc = keptCrop ? zoomShown : a.z;
+  $('zoomV').textContent = `${zoomE.toFixed(2)}×`;
+  $('zoomParts').textContent = keptCrop ? `Camera ${zoomLabel(zc)} · digital ${(1 / Math.max(keptCrop.w, keptCrop.h)).toFixed(1)}×`
+    : `Camera ${zoomLabel(zc)} · digital ${a.digital.toFixed(1)}×`
+      + (a.limitedBy === 'centre' ? '. The camera zoom stops there to keep the center in the picture.'
+        : a.limitedBy === 'focus' ? `. The camera zoom stays below the lens that cannot focus at ${focusLabel(+$('focus').value)}.` : '');
+  showLensBar();
+  $('lensWarn').textContent = lensWarning();
+  const fr = focusRegion, afb = $('afBox').style;
+  afb.display = fr ? 'block' : 'none';
+  if (fr) { afb.left = (fr.x - c.x) / c.w * 100 + '%'; afb.top = (fr.y - c.y) / c.h * 100 + '%'; afb.width = fr.w / c.w * 100 + '%'; afb.height = fr.h / c.h * 100 + '%'; }
+  $('regionRow').classList.toggle('hidden', !fr);
+  $('cxV').textContent = Math.round(+$('cx').value * 100) + '%'; $('cyV').textContent = Math.round(+$('cy').value * 100) + '%';
+  $('centerRow').classList.toggle('dim', zoomE / baseZoom() <= 1.001); // the center only matters once zoomed in
   $('grid').style.display = $('cross').style.display = $('showGrid').checked ? 'block' : 'none';
   const p = currentProfile();
   const copy = p.source.startsWith('android:') && isFull(c) && p.rotate === 0;
   const turned = p.rotate % 180 !== 0, fw = turned ? p.height : p.width, fh = turned ? p.width : p.height; // the crop is on the rotated picture
-  $('cropStat').textContent = !isFull(c) ? `crop ${Math.round(p.crop.w * fw)}×${Math.round(p.crop.h * fh)} px` : 'full frame';
+  $('cropStat').textContent = !isFull(c) ? `crop ${Math.round(p.crop.w * fw)}×${Math.round(p.crop.h * fh)} px · digital ${(1 / Math.max(c.w, c.h)).toFixed(1)}×` : 'full frame';
   $('outStat').textContent = copy ? 'Records the phone stream as is (no re-encode).' : 'Records with a re-encode (crop, rotate or Mac camera).';
   $('saved').textContent = ''; $('savedPath').textContent = ''; // a confirmation only describes the settings it saved
 }
@@ -281,16 +369,140 @@ function fitFrame() {
   $('frame').style.width = aw * scale + 'px'; $('frame').style.height = ah * scale + 'px';
 }
 
+/** The lens a logical camera uses at zoom z (the camera's own choice is shown live when it reports it). */
+const lenses = () => (device()?.kind === 'android' ? device().caps.lenses : null);
+/** The lens taking the picture: this camera's own lens, or the one the switching camera reports (or would pick). */
+function lensInUse(z = keptCrop ? zoomShown : allocate().z) {
+  const c = device()?.caps, ls = c?.lenses;
+  if (!ls?.length) return null;
+  if (c.lensId != null) return ls.find((l) => l.id === c.lensId);
+  return ls.find((x) => x.id === liveLens) ?? lensAt(ls, z);
+}
+const lensText = (l) => (l.n ? `lens ${l.n} · ${l.kind ?? lensName(l)}` : `${lensName(l)} lens`);
+const lensAt = (ls, z) => { const s = [...ls].sort((a, b) => a.zoom - b.zoom); return [...s].reverse().find((l) => l.zoom <= z + 0.01) ?? s[0]; };
+const lensName = (l) => (l.zoom < 0.9 ? 'ultrawide' : l.zoom <= 1.2 ? 'main' : 'telephoto');
+/** "2.40× · telephoto + sensor crop 1.1×": which lens, and how much of the zoom is a crop on its sensor. */
+function zoomLabel(z) {
+  const l = lensInUse(z);
+  if (!l) return `${z.toFixed(2)}×${z > 1.01 ? ' (sensor crop)' : ''}`;
+  // the camera's zoom z is relative to its own 1x; the lens starts at its zoom compared with that
+  const own = device().caps.lensId != null, start = own ? 1 : Math.max(l.zoom, zoomRange()[0]), crop = z / start;
+  return `${z.toFixed(2)}× (${lensText(l)}${crop > 1.04 ? ` + sensor crop ${crop.toFixed(1)}×` : ', optical'})`;
+}
+/**
+ * The lens in use cannot focus as close as the subject: the telephoto of a phone often stops at 40-50 cm,
+ * and reports "focused" there anyway. Known from the fixed focus, or from autofocus parked at the lens's limit.
+ */
+function lensWarning() {
+  const ls = lenses();
+  if (!ls?.length) return '';
+  const l = lensInUse();
+  if (!(l?.nearest > 0)) return '';
+  const fixed = $('focusMode').value === 'fixed' ? Math.max(+$('focus').value, focusWanted ?? 0) : null;
+  const want = fixed ?? liveFocus;
+  // With autofocus, only a lens that cannot focus near (under 3 D, 33 cm) is suspect: a searching autofocus also
+  // passes through the main lens's macro limit.
+  if (want == null || want < l.nearest - 0.05 || (fixed == null && l.nearest > 3)) return '';
+  return `${l.n ? `Lens ${l.n} (${l.kind ?? lensName(l)})` : `The ${lensName(l)} lens`} cannot focus closer than ${Math.round(100 / l.nearest)} cm`
+    + `${fixed != null ? `, and the subject is at ${focusLabel(fixed)}` : ' and autofocus is at that limit'}: the picture will be blurred. `
+    + 'Zoom out to a lens that focuses closer, or move the camera back.';
+}
+/** The cameras of this lens group: the switching one ("Auto") and each lens on its own, as devices. */
+function lensDevices(dev = device()) {
+  const c = dev?.caps;
+  if (!c?.lenses) return [];
+  const serial = dev.id.split('/')[0], logical = devices.find((d) => d.caps?.lenses && d.caps.lensId == null && d.id.startsWith(serial + '/'));
+  const out = logical ? [{ dev: logical, label: 'Auto', title: 'All lenses: the phone switches with the zoom' }] : [];
+  for (const l of [...c.lenses].sort((a, b) => a.zoom - b.zoom)) {
+    const d = devices.find((x) => x.id === `${serial}/${l.id}`);
+    if (d) out.push({ dev: d, label: `${l.n} · ${l.kind ?? lensName(l)} ${l.zoom}×`, lens: l,
+      title: `${l.px ? `${l.px} px sensor, ` : ''}${l.nearest > 0 ? `focuses from ${Math.round(100 / l.nearest)} cm` : 'fixed focus'}` });
+  }
+  return out;
+}
+function showLensBar() {
+  const opts = lensDevices(), bar = $('lensBar');
+  $('lensRow').classList.toggle('hidden', opts.length < 2);
+  const inUse = lensInUse();
+  $('lensStat').textContent = inUse ? `${lensText(inUse)}${device().caps.lensId == null ? ' (auto)' : ''}` : '';
+  if (opts.length < 2) return;
+  const key = opts.map((o) => o.dev.id).join();
+  if (bar.key !== key) {
+    bar.innerHTML = '';
+    for (const o of opts) {
+      const b = document.createElement('button');
+      b.textContent = o.label; b.title = o.title; b.devId = o.dev.id; b.lensId = o.lens?.id;
+      b.onclick = () => switchCamera(o.dev.id);
+      bar.appendChild(b);
+    }
+    bar.key = key;
+  }
+  // selected camera filled; with Auto, the lens it is using now gets a dot
+  for (const b of bar.options ?? bar.children) {
+    b.className = b.devId === device().id ? 'on' : '';
+    b.textContent = b.textContent.replace(/ ●$/, '') + (device().caps.lensId == null && b.lensId && b.lensId === inUse?.id ? ' ●' : '');
+  }
+}
+/** Use another camera of the group (another lens), keeping the zoom and the framed part of the scene. */
+function switchCamera(id) {
+  if (id === $('camera').value) return;
+  const E = zoomE, from = baseZoom(), c1 = [+$('cx').value, +$('cy').value];
+  if ($('focusMode').value === 'fixed') focusWanted ??= +$('focus').value;
+  $('camera').value = id;
+  const k = baseZoom() / from; // the center, in the new camera's 1x view (same optical axis, roughly)
+  $('cx').value = 0.5 + (c1[0] - 0.5) * k; $('cy').value = 0.5 + (c1[1] - 0.5) * k;
+  focusRegion = null; keptCrop = null; bestLens = null;
+  onCameraChange({ size: $('size').value, fps: +$('fps').value, zoomE: E });
+}
+
+// Zoom, focus and locks go to the running camera without restarting it. Requests are coalesced: while one is
+// in flight, the next one carries only the latest values.
+let livePending = null, liveBusy = false;
+function live(patch) {
+  if (!previewId) { scheduleRestart(); return; }
+  livePending = { ...livePending, ...patch };
+  if (liveBusy) return;
+  liveBusy = true;
+  (async () => {
+    while (livePending) {
+      const body = livePending; livePending = null;
+      try { await api('/api/preview/live', body); } catch (e) { if (e.status === 409) scheduleRestart(); else setNote(e.message, 'bad'); }
+    }
+    liveBusy = false;
+  })();
+}
+
+const clampRect = (r) => { const w = Math.min(r.w, 1), h = Math.min(r.h, 1); return { x: Math.min(Math.max(r.x, 0), 1 - w), y: Math.min(Math.max(r.y, 0), 1 - h), w, h }; };
+const r4 = (n) => Math.round(n * 10000) / 10000;
+const rezoomRect = (r, k) => clampRect({ x: r4(0.5 + (r.x - 0.5) * k), y: r4(0.5 + (r.y - 0.5) * k), w: r4(r.w * k), h: r4(r.h * k) });
+/** After the zoom or center changed: new camera zoom (sent live if it changed) and crop; the focus area follows. */
+function reframe() {
+  keptCrop = null;
+  $('frameNote').textContent = ''; bestLens = null; $('bestRow').classList.add('hidden'); // they described the last framing
+  const z = allocate().z;
+  if (focusRegion && z !== zoomShown) focusRegion = rezoomRect(focusRegion, z / zoomShown);
+  zoomShown = z;
+  applyView();
+  if (device()?.kind === 'android' && z !== cameraZoomSent) { cameraZoomSent = z; live({ zoom: z, ...(focusRegion && { focusRegion }) }); }
+}
+function setZoomE(E) {
+  const [lo, hi] = [2 ** +$('zoom').min, 2 ** +$('zoom').max];
+  zoomE = Math.min(Math.max(E, lo), hi); $('zoom').value = Math.log2(zoomE);
+  reframe();
+}
+
 async function restartPreview() {
   clearTimeout(restartTimer);
   const dev = device(); if (!dev) return;
   const mine = ++previewAt;
   previewId = null; released = false; failed = false;
-  showMsg('Starting camera…', false, 'busy'); $('view').removeAttribute('src'); $('fpsStat').textContent = '';
+  showMsg('Starting camera…', false, 'busy'); $('view').removeAttribute('src'); $('fpsStat').textContent = ''; $('focusStat').textContent = '';
   try {
     const { id } = await api('/api/preview/start', { profile: currentProfile() });
     if (mine !== previewAt) return;
     previewId = id; $('view').src = `/stream?id=${id}&t=${TOKEN}&r=${Date.now()}`;
+    // a selection kept across a lens switch, in the new camera's 1x view: into its current view, then framed
+    if (pendingFrame) { const s = rezoomRect(pendingFrame, zoomShown); pendingFrame = null; frameSelection(s); }
   } catch (e) { if (mine === previewAt) { failed = true; showMsg(e.message + '\nClick here to try again.', true, 'act'); } }
 }
 const scheduleRestart = () => { clearTimeout(restartTimer); restartTimer = setTimeout(restartPreview, 450); };
@@ -311,10 +523,31 @@ async function onCameraChange(keep = {}) {
 function onSizeChange(keep = {}) {
   const dev = device(), size = $('size').value, opts = fpsOptionsFor(dev, size, keep.fps);
   fillSelect($('fps'), opts, keep.fps ?? (opts.includes(30) ? 30 : opts[0]), (f) => f + ' fps' + (f > 60 ? ' (slow)' : ''));
-  const zr = dev?.kind === 'android' ? dev.caps.zoomRange : [1, 1];
-  $('zoomRow').classList.toggle('hidden', dev?.kind !== 'android');
-  $('zoom').min = zr[0]; $('zoom').max = zr[1]; if (keep.zoom) $('zoom').value = keep.zoom; else if (+$('zoom').value > zr[1]) $('zoom').value = 1;
+  const zr = zoomRange(dev), b = baseZoom(dev);
+  $('zoom').min = Math.log2(b * zr[0]); $('zoom').max = Math.log2(b * zr[1] * MAX_DIGITAL);
+  if (keep.zoom !== undefined) fromProfile(keep.zoom, keep.crop ?? keptCrop);
+  else zoomE = Math.min(Math.max(keep.zoomE ?? zoomE, 2 ** +$('zoom').min), 2 ** +$('zoom').max);
+  $('zoom').value = Math.log2(zoomE);
+  zoomShown = keptCrop ? keep.zoom ?? zoomShown : allocate().z; cameraZoomSent = zoomShown;
+  if (!dev?.caps?.afRegions) focusRegion = null;
+  liveFocus = null; liveLens = null; updateLens();
   onFpsChange(); applyView(); scheduleRestart();
+}
+/** Focus in diopters as a distance: 4 D = 25 cm, 0 = infinity. */
+const focusLabel = (d) => { if (!(d > 0)) return '∞'; const cm = 100 / d; return cm >= 100 ? `${(cm / 100).toFixed(1)} m` : `${Math.round(cm)} cm`; };
+function updateLens() {
+  const c = device()?.kind === 'android' ? device().caps : null;
+  const hasFocus = !!c?.focusRange, locks = c?.locks ?? [];
+  $('lensGroup').hidden = !hasFocus && !locks.length;
+  if (hasFocus) { $('focus').max = c.focusRange[1]; if (focusWanted != null) $('focus').value = focusWanted; }
+  $('focusMode').disabled = !hasFocus;
+  const fixed = hasFocus && $('focusMode').value === 'fixed';
+  $('focusRow').classList.toggle('hidden', !fixed);
+  $('focusV').textContent = `${focusLabel(+$('focus').value)} (${(+$('focus').value).toFixed(2)} D)`;
+  $('focusHere').disabled = !hasFocus || !previewId;
+  $('lockRow').classList.toggle('hidden', !locks.length);
+  $('aeLock').disabled = !locks.includes('ae'); $('awbLock').disabled = !locks.includes('awb');
+  $('lockNote').classList.toggle('hidden', !($('aeLock').checked || $('awbLock').checked));
 }
 function onFpsChange() {
   const f = +$('fps').value, size = $('size').value;
@@ -339,27 +572,122 @@ async function load() {
   if (p) {
     $('name').value = state.profileName; $('rotate').value = p.rotate ?? 0; $('bitrate').value = p.bitrate ?? '';
     $('advanced').open = p.bitrate != null; // a saved bitrate is a decision: show it
+    // The saved crop is kept exactly until the framing is touched (the slider shows its zoom meanwhile).
     if (p.crop && !isFull(p.crop)) keptCrop = { ...p.crop };
-    const dz = p.crop ? 1 / p.crop.w : 1; $('dz').value = dz;
-    $('cx').value = p.crop ? p.crop.x + p.crop.w / 2 : 0.5; $('cy').value = p.crop ? p.crop.y + p.crop.h / 2 : 0.5;
+    $('focusMode').value = p.focus !== undefined ? 'fixed' : 'auto'; if (p.focus !== undefined) $('focus').value = p.focus;
+    $('aeLock').checked = !!p.exposureLock; $('awbLock').checked = !!p.whiteBalanceLock;
+    focusRegion = p.focusRegion ? { ...p.focusRegion } : null;
   }
-  await onCameraChange(p && p.source === $('camera').value ? { size: `${p.width}x${p.height}`, fps: p.fps, zoom: p.zoom } : {});
+  await onCameraChange(p && p.source === $('camera').value ? { size: `${p.width}x${p.height}`, fps: p.fps, zoom: p.zoom ?? 1, crop: p.crop } : {});
   $('camNote').textContent = res.problems.map((q) => `${q.model}: ${q.hint}`).join('\n');
 }
 
-$('camera').onchange = () => onCameraChange();
+$('camera').onchange = () => { keptCrop = null; focusRegion = null; onCameraChange(); };
 $('size').onchange = () => onSizeChange();
 $('fps').onchange = () => { onFpsChange(); applyView(); scheduleRestart(); };
-$('zoom').oninput = () => { applyView(); scheduleRestart(); };
+$('zoom').oninput = () => { zoomE = 2 ** +$('zoom').value; reframe(); };
 $('rotate').onchange = () => { applyView(); scheduleRestart(); };
-const reframe = () => { keptCrop = null; applyView(); };
-for (const id of ['dz', 'cx', 'cy']) $(id).oninput = reframe;
+for (const id of ['cx', 'cy']) $(id).oninput = reframe;
 $('showGrid').oninput = applyView;
+const focusNow = () => ($('focusMode').value === 'fixed' ? +$('focus').value : 'auto');
+// a fixed focus can move the camera zoom off a lens that cannot reach it (focusCap)
+const lensChanged = (patch) => { updateLens(); if (!keptCrop) reframe(); else applyView(); live(patch); };
+$('focusMode').onchange = () => lensChanged({ focus: focusNow() });
+$('focus').oninput = () => { focusWanted = null; lensChanged({ focus: focusNow() }); };
+$('aeLock').oninput = () => lensChanged({ exposureLock: $('aeLock').checked });
+$('awbLock').oninput = () => lensChanged({ whiteBalanceLock: $('awbLock').checked });
+$('clearRegion').onclick = () => { focusRegion = null; lensChanged({ focusRegion: null }); };
+/** Autofocus once on the focus area (or the framed picture), and fix the focus where it ends. */
+$('focusHere').onclick = async () => {
+  const c = currentCrop();
+  $('focusHere').disabled = true; $('frameNote').textContent = 'Focusing…';
+  try {
+    const r = await api('/api/preview/scan', { region: focusRegion ?? (isFull(c) ? null : c) });
+    $('focus').value = r.focus; $('focusMode').value = 'fixed'; focusWanted = null;
+    $('frameNote').textContent = `Focus fixed at ${focusLabel(r.focus)}${r.ok ? '' : ' (autofocus was not sure: check the picture)'}.`;
+    updateLens(); applyView();
+  } catch (e) { $('frameNote').textContent = e.message; }
+  $('focusHere').disabled = false;
+};
+
+// Drag on the preview to frame that part: camera zoom first, a centred digital crop for the rest, focus on it.
+let drag = null, dragged = false;
+const framePoint = (e) => { const r = $('frame').getBoundingClientRect(); return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)]; };
+$('view').addEventListener('mousedown', (e) => { if (e.button) return; e.preventDefault(); const [x, y] = framePoint(e); drag = { x0: x, y0: y, x1: x, y1: y }; dragged = false; });
+addEventListener('mousemove', (e) => {
+  if (!drag) return;
+  [drag.x1, drag.y1] = framePoint(e);
+  if (Math.abs(drag.x1 - drag.x0) > 0.02 || Math.abs(drag.y1 - drag.y0) > 0.02) dragged = true;
+  const st = $('sel').style;
+  st.display = dragged ? 'block' : 'none';
+  st.left = Math.min(drag.x0, drag.x1) * 100 + '%'; st.top = Math.min(drag.y0, drag.y1) * 100 + '%';
+  st.width = Math.abs(drag.x1 - drag.x0) * 100 + '%'; st.height = Math.abs(drag.y1 - drag.y0) * 100 + '%';
+});
+addEventListener('mouseup', () => {
+  if (!drag) return;
+  const d = drag; drag = null; $('sel').style.display = 'none';
+  if (!dragged) return;
+  const c = currentCrop(); // the selection is on the picture as shown, which is the crop
+  const r4 = (n) => Math.round(n * 10000) / 10000;
+  frameSelection({ x: r4(c.x + Math.min(d.x0, d.x1) * c.w), y: r4(c.y + Math.min(d.y0, d.y1) * c.h), w: r4(Math.abs(d.x1 - d.x0) * c.w), h: r4(Math.abs(d.y1 - d.y0) * c.h) });
+});
+
+/** A crop with the picture's proportions, centred on `sel` (view coordinates), a little larger than it. */
+function cropAround(sel) {
+  const side = Math.min(1, Math.max(sel.w, sel.h) * 1.12);
+  return clampRect({ x: sel.x + sel.w / 2 - side / 2, y: sel.y + sel.h / 2 - side / 2, w: side, h: side });
+}
+function showCrop(crop, z = allocate().z) {
+  keptCrop = null;
+  fromProfile(z, crop);
+}
+async function frameSelection(sel) {
+  const dev = device();
+  if (dev?.kind !== 'android' || !previewId) { showCrop(cropAround(sel), zoomShown); reframe(); return; } // a Mac camera: digital crop only
+  $('frameNote').textContent = 'Zooming and focusing on the selection…';
+  try {
+    const r = await api('/api/preview/frame', { selection: sel });
+    const ch = r.changes;
+    // the phone dropped the camera and the server opened it again: follow the new stream
+    if (r.previewId && r.previewId !== previewId) { previewId = r.previewId; $('view').src = `/stream?id=${previewId}&t=${TOKEN}&r=${Date.now()}`; }
+    liveLens = r.lens?.id ?? liveLens;
+    // kept exactly as framed (the camera zoom may stay low for the focus); touching the zoom reallocates
+    fromProfile(ch.zoom, ch.crop); keptCrop = isFull(ch.crop) ? null : { ...ch.crop }; zoomShown = ch.zoom; cameraZoomSent = ch.zoom;
+    focusRegion = dev.caps.afRegions ? ch.focusRegion : null;
+    if (ch.focus !== undefined) { $('focus').value = ch.focus; $('focusMode').value = 'fixed'; focusWanted = null; }
+    updateLens(); applyView();
+    const rank = r.ranking?.lenses?.map((l) => `lens ${l.n} ${l.kind}: ${l.why ?? `${l.detailPx} px across`}`) ?? [];
+    $('frameNote').textContent = [`Focus ${ch.focus !== undefined ? focusLabel(ch.focus) : 'unchanged'}.`, ...r.notes,
+      ...(rank.length ? [`Detail on the subject (sensor pixels): ${rank.join('; ')}.`] : [])].join('\n');
+    // Offer the lens with the most detail when it is a camera of its own and not the one in use.
+    const best = r.ranking?.best && r.ranking.best !== r.ranking.inUse ? lensDevices().find((o) => o.lens?.id === r.ranking.best) : null;
+    bestLens = best ? { devId: best.dev.id, sel } : null;
+    $('bestRow').classList.toggle('hidden', !best);
+    if (best) $('useBest').textContent = `Use lens ${best.lens.n} (${best.lens.kind}) for more detail`;
+    return;
+  } catch (e) { $('frameNote').textContent = e.message; }
+  updateLens(); applyView();
+}
 $('bitrate').oninput = applyView;
-$('view').addEventListener('wheel', (e) => { e.preventDefault(); keptCrop = null; $('dz').value = Math.min(8, Math.max(1, +$('dz').value - Math.sign(e.deltaY) * 0.1)); applyView(); }, { passive: false });
+$('view').addEventListener('wheel', (e) => { e.preventDefault(); setZoomE(zoomE * (e.deltaY < 0 ? 1.1 : 1 / 1.1)); }, { passive: false });
+/** Switch to the better lens and frame the same part of the scene on it. */
+$('useBest').onclick = () => {
+  if (!bestLens) return;
+  const target = devices.find((d) => d.id === bestLens.devId);
+  const k = baseZoom(target) / baseZoom(), s = bestLens.sel, z = zoomShown;
+  // the selection in the 1x view of the new lens (same optical axis, roughly)
+  const s1 = { x: 0.5 + (s.x - 0.5) / z, y: 0.5 + (s.y - 0.5) / z, w: s.w / z, h: s.h / z };
+  const next = { x: 0.5 + (s1.x - 0.5) * k, y: 0.5 + (s1.y - 0.5) * k, w: s1.w * k, h: s1.h * k };
+  switchCamera(bestLens.devId);
+  pendingFrame = next; // framed again once the new camera's preview is up
+};
 $('view').addEventListener('click', (e) => {
+  if (dragged) { dragged = false; return; } // the end of a selection, not a click
   const r = $('frame').getBoundingClientRect(), c = currentCrop(); // the crop on screen, saved or from the controls
-  $('cx').value = c.x + ((e.clientX - r.left) / r.width) * c.w; $('cy').value = c.y + ((e.clientY - r.top) / r.height) * c.h; reframe();
+  // the clicked point, in this camera's 1x view
+  const z = keptCrop ? zoomShown : allocate().z;
+  const px = c.x + ((e.clientX - r.left) / r.width) * c.w, py = c.y + ((e.clientY - r.top) / r.height) * c.h;
+  $('cx').value = 0.5 + (px - 0.5) / z; $('cy').value = 0.5 + (py - 0.5) / z; reframe();
 });
 addEventListener('resize', fitFrame);
 
@@ -406,6 +734,11 @@ setInterval(async () => {
       return showMsg('The camera was released: another tab took it, or no tab was watching.\nClick here to show the preview again.', false, 'act');
     }
     $('fpsStat').textContent = s.frames ? `Live · ${s.fps.toFixed(1)} fps` : '';
+    const cam = s.camera;
+    liveFocus = cam?.focus ?? null;
+    if ((cam?.lens ?? null) !== liveLens) { liveLens = cam?.lens ?? null; applyView(); }
+    $('focusStat').textContent = cam?.focus != null ? `Focus ${focusLabel(cam.focus)} · ${cam.autofocus ? 'auto' : 'fixed'}${cam.aeLock ? ' · exposure locked' : ''}` : '';
+    updateLens();
   } catch {}
 }, 1000);
 $('msg').addEventListener('click', () => { if (released || failed) restartPreview(); });

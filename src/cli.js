@@ -5,10 +5,12 @@ import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configPathForWrite, emptyConfig, findConfigPath, globalConfigPath, getProfile, loadConfig, normalizeProfile, saveConfig, upsertProfile } from './config.js';
-import { listDevices, macCameraModes } from './devices.js';
+import { androidCameras, listDevices, macCameraModes } from './devices.js';
 import { assertSupported } from './validate.js';
 import { doctor, macCameraAccess } from './doctor.js';
 import { recordToFile, takeSnapshot } from './capture.js';
+import { startSession, parseAndroidSource } from './session.js';
+import { baseZoom, frameSelection, pictureToView, viewToCamera } from './framing.js';
 import { serveConfigurator } from './server.js';
 import { UserError, sleep } from './util.js';
 import { claim, listenControl, readState, recorderStatus, removeState, statePath, stopRecorder, updateState } from './background.js';
@@ -24,7 +26,15 @@ const HELP = `agent-eye: eyes for agents. Configure, preview and record cameras.
       [--name N] [--default]           writes only profile N, creating it if new (--profile N, or "name" in
                                        the JSON, is the same); without a name, the default profile.
                                        --default makes N the default
+  agent-eye configure --update JSON    change only these fields of a profile (null removes one: {"focus": null})
   agent-eye preview                    open the browser on the saved profile to check or adjust it
+  agent-eye frame --region x,y,w,h     frame that part of the picture (fractions of what \`snapshot\` shows):
+                                       most camera zoom that keeps it centred, a crop for the rest, focus on it
+      [--lens auto|best|N]             on lens N (as \`devices\` numbers them), the phone's automatic switching,
+                                       or the lens that shows the region with the most detail
+  agent-eye focus [scan|auto|D]        scan: autofocus once on --region (or the focus area, or the picture)
+      [--region x,y,w,h]               and fix it there; auto: continuous autofocus (on --region if given);
+                                       D: fixed at D diopters (1/m: 4 = 25 cm)
   agent-eye show                       print the saved profile
   agent-eye snapshot --out f.jpg       one full-resolution still with the saved framing
   agent-eye record --out v.mp4 --duration 30
@@ -109,15 +119,25 @@ async function readSetInput(value) {
 }
 
 async function cmdConfigureJson(flags) {
+  const merge = flags.update !== undefined;
+  const opt = merge ? 'update' : 'set';
   let raw;
-  try { raw = JSON.parse(await readSetInput(flags.set)); } catch (e) { throw new UserError(`--set is not valid JSON: ${e.message}`, { code: 2 }); }
+  try { raw = JSON.parse(await readSetInput(flags[opt])); } catch (e) { throw new UserError(`--${opt} is not valid JSON: ${e.message}`, { code: 2 }); }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new UserError(`--${opt} must be a JSON object.`, { code: 2 });
+  if (merge) {
+    // Only the given fields change; null removes one (back to its default, e.g. "focus": null is autofocus).
+    const { profile: current } = requireConfig({ profile: flags.name ?? flags.profile ?? raw.name });
+    const { name: _cn, confirmedAt: _cc, ...base } = current;
+    raw = { ...base, ...raw, name: current.name };
+    for (const k of Object.keys(raw)) if (raw[k] === null) delete raw[k];
+  }
   if (flags.name && flags.profile && flags.name !== flags.profile) {
     throw new UserError(`--name "${flags.name}" and --profile "${flags.profile}" name different profiles; pass one.`, { code: 2 });
   }
   if (flags.default !== undefined && flags.default !== true && flags.default !== 'true') {
     throw new UserError(`--default takes no value (got "${flags.default}"); leave it out to keep the current default.`, { code: 2 });
   }
-  if (raw.name !== undefined && raw.name !== null && typeof raw.name !== 'string') throw new UserError('"name" in --set JSON must be a string.', { code: 2 });
+  if (raw.name !== undefined && raw.name !== null && typeof raw.name !== 'string') throw new UserError(`"name" in --${opt} JSON must be a string.`, { code: 2 });
   const { name: _n, confirmedAt: _c, ...body } = raw;
   const profile = normalizeProfile(body);
   const { devices } = await listDevices({ capabilities: true });
@@ -135,6 +155,169 @@ async function cmdConfigureJson(flags) {
   saveConfig(path, cfg);
   print(flags, { ok: true, name, created, default: cfg.default, configPath: path, profile: cfg.profiles[name] },
     `${created ? 'Created' : 'Updated'} profile "${name}" in ${path}; the default profile is "${cfg.default}".`);
+}
+
+/** --region x,y,w,h: fractions of the picture `snapshot` shows (after the crop), in view coordinates. */
+function regionFlag(flags, profile) {
+  if (flags.region === undefined) return undefined;
+  const v = String(flags.region).split(',').map((t) => (t.trim() === '' ? NaN : Number(t)));
+  const [x, y, w, h] = v;
+  if (v.length !== 4 || !v.every(Number.isFinite) || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > 1.0001 || y + h > 1.0001) {
+    throw new UserError(`--region must be x,y,w,h as fractions of the picture (0-1), inside it (got "${flags.region}").`, { code: 2 });
+  }
+  const r = pictureToView({ x, y, w, h }, profile.crop);
+  const r4 = (n) => Math.round(n * 10000) / 10000;
+  return { x: r4(r.x), y: r4(r.y), w: r4(r.w), h: r4(r.h) };
+}
+
+/** Write `changes` into the profile (read just before writing). */
+function saveChanges(path, name, changes) {
+  const cfg = loadConfig(path);
+  const { confirmedAt: _c, ...current } = cfg.profiles[name];
+  const next = { ...current, ...changes };
+  for (const k of Object.keys(next)) if (next[k] === null) delete next[k];
+  const out = upsertProfile(cfg, name, next);
+  saveConfig(path, out);
+  return out.profiles[name];
+}
+
+/** The phone's cameras for a profile (the profile's own first), for framing and focusing commands. */
+async function phoneCameras(profile) {
+  if (!profile.source.startsWith('android:')) throw new UserError('Framing and focus need a phone camera; for a Mac camera set "crop" with `configure --update`.', { code: 2 });
+  const { serial, cameraId } = parseAndroidSource(profile.source);
+  const cams = await androidCameras(serial);
+  const caps = cams.find((c) => c.id === cameraId);
+  if (!caps) throw new UserError(`The phone has no camera ${cameraId}.`, { code: 3 });
+  return { serial, cams, caps };
+}
+
+/**
+ * Opens the camera of `profile` with nothing recorded and runs fn with it. If the phone drops the camera
+ * meanwhile (its camera service does now and then while switching lenses), opens it again and runs fn once more.
+ */
+async function openPhone(profile, caps, fn, { retry = true } = {}) {
+  const abort = new AbortController();
+  abortOnSignals(abort);
+  const session = await startSession(profile, ['-f', 'null', '-'], { waitReady: true, signal: abort.signal });
+  try { return await fn(session); } catch (e) {
+    if (!retry || !e.cameraStopped) throw e;
+    console.error(`${e.message} Opening it again…`);
+  } finally { await session.stop(); }
+  return openPhone(profile, caps, fn, { retry: false });
+}
+
+async function withPhone(flags, fn) {
+  const { path, profile } = requireConfig(flags);
+  const { caps } = await phoneCameras(profile);
+  return openPhone(profile, caps, (session) => fn({ path, profile, caps, session }));
+}
+
+/**
+ * The camera of the same phone that films through lens `want` ("auto": the camera that switches lenses with the
+ * zoom; a number: lens N, counted from the widest, as `devices` lists them). Null when it is `caps` itself.
+ */
+function lensCamera(cams, caps, want) {
+  if (!caps.lenses) throw new UserError('This camera has a single lens: --lens needs a phone camera made of several (see `agent-eye devices`).', { code: 2 });
+  const group = cams.filter((c) => c.logicalId === caps.logicalId);
+  let cam;
+  if (want === 'auto') cam = group.find((c) => c.lensId === null);
+  else {
+    const l = caps.lenses.find((x) => x.n === Number(want));
+    if (!l) throw new UserError(`--lens takes auto, best or a lens number 1-${caps.lenses.length} (got "${want}").`, { code: 2 });
+    cam = group.find((c) => c.lensId === l.id);
+    if (!cam) throw new UserError(`Lens ${l.n} (${l.kind}) cannot be opened as a camera of its own on this phone; use --lens auto.`, { code: 3 });
+  }
+  if (!cam) throw new UserError('This phone has no camera that switches between lenses.', { code: 3 });
+  return cam.id === caps.id ? null : cam;
+}
+
+/**
+ * `profile` and a selection on it moved to another camera of the same lenses: same scene, same zoom of the main
+ * lens where it can (the lenses share roughly the same optical axis). The crop and focus area start over.
+ */
+function moveToCamera(profile, caps, sel, serial, cam) {
+  const k = baseZoom(cam) / baseZoom(caps), z0 = profile.zoom ?? 1;
+  const [lo, hi] = cam.zoomRange ?? [1, 1];
+  const z1 = Math.round(Math.min(Math.max(z0 / k, lo), hi) * 100) / 100;
+  const m = (p) => 0.5 + (p - 0.5) / z0 * k * z1, r4 = (n) => Math.round(n * 10000) / 10000;
+  const s = { x: r4(m(sel.x)), y: r4(m(sel.y)), w: r4(sel.w / z0 * k * z1), h: r4(sel.h / z0 * k * z1) };
+  if (s.x < -0.001 || s.y < -0.001 || s.x + s.w > 1.001 || s.y + s.h > 1.001) {
+    const l = cam.lenses.find((x) => x.id === cam.lensId);
+    throw new UserError(`The region is outside what ${l ? `lens ${l.n} (${l.kind})` : 'that camera'} sees: choose a region nearer the middle of the picture.`, { code: 2 });
+  }
+  const clamp = (v) => Math.min(Math.max(v, 0), 1);
+  const { focusRegion: _f, ...rest } = profile;
+  const next = { ...rest, source: `android:${serial}/${cam.id}`, zoom: z1, crop: { x: 0, y: 0, w: 1, h: 1 } };
+  assertSupported(next, { kind: 'android', caps: cam });
+  return { profile: next, sel: { x: clamp(s.x), y: clamp(s.y), w: Math.min(s.w, 1 - clamp(s.x)), h: Math.min(s.h, 1 - clamp(s.y)) } };
+}
+
+const cmOf = (d) => (d > 0 ? Math.round(100 / d) : null);
+
+const lensOf = (caps, id) => caps.lenses?.find((l) => l.id === id) ?? null;
+const lensWords = (l) => (l?.n ? `lens ${l.n}, ${l.kind}` : l ? `${l.zoom < 0.9 ? 'ultrawide' : l.zoom <= 1.2 ? 'main' : 'telephoto'} lens` : null);
+
+async function cmdFrame(flags) {
+  const { path, profile: p0 } = requireConfig(flags);
+  const sel0 = regionFlag(flags, p0);
+  if (!sel0) throw new UserError('--region x,y,w,h is required: the part of the picture to frame, as fractions of what `snapshot` shows.', { code: 2 });
+  const want = flags.lens === undefined ? null : String(flags.lens);
+  const { serial, cams, caps: caps0 } = await phoneCameras(p0);
+  const onStep = (m) => { if (!jsonMode(flags)) console.error(m); };
+  // On the profile's camera, or first moved to the camera of the lens asked for.
+  let profile = p0, sel = sel0, caps = caps0;
+  if (want !== null && want !== 'best') {
+    const cam = lensCamera(cams, caps0, want);
+    if (cam) ({ profile, sel } = moveToCamera(p0, caps0, sel0, serial, cam)), caps = cam;
+  }
+  let r = await openPhone(profile, caps, (session) => frameSelection(session, profile, sel, caps, { onStep }));
+  // best: the lens that shows the region with the most detail (and can focus on it), opened on its own
+  if (want === 'best' && r.ranking?.best && r.ranking.best !== r.ranking.inUse) {
+    const l = lensOf(caps, r.ranking.best);
+    const cam = cams.find((c) => c.logicalId === caps.logicalId && c.lensId === l.id);
+    if (cam) {
+      onStep(`Lens ${l.n} (${l.kind}) shows it with more detail: framing it there.`);
+      ({ profile, sel } = moveToCamera(p0, caps0, sel0, serial, cam)); caps = cam;
+      r = await openPhone(profile, caps, (session) => frameSelection(session, profile, sel, caps, { onStep }));
+    } else r.notes.push(`Lens ${l.n} cannot be opened as a camera of its own on this phone.`);
+  }
+  const moved = profile.source !== p0.source;
+  const saved = saveChanges(path, p0.name, { ...(moved && { source: profile.source, focusRegion: null }), ...r.changes });
+  const lens = r.lens ? lensOf(caps, r.lens.id) ?? r.lens : null;
+  const out = { ok: true, profile: p0.name, saved, lens, digitalCrop: r.digitalCrop, scan: r.scan, notes: r.notes,
+    ...(r.ranking && { lenses: r.ranking.lenses, bestLens: r.ranking.best }) };
+  const ranking = r.ranking?.lenses?.map((x) => `    lens ${x.n} ${x.kind}: ${x.why ?? `${x.detailPx} sensor pixels across the region`}${x.id === r.ranking.best ? ' (best)' : ''}`) ?? [];
+  print(flags, out, [`Framed "${p0.name}"${moved ? ` on ${saved.source}` : ''}: camera zoom ${saved.zoom}×${lens ? ` (${lensWords(lens)})` : ''}, `
+    + `digital crop ${r.digitalCrop}×${saved.focus !== undefined ? `, focus fixed at ${saved.focus} D (${cmOf(saved.focus)} cm)` : ''}.`,
+  ...r.notes.map((n) => `  ! ${n}`), ...(ranking.length ? ['  Detail by lens:', ...ranking] : []),
+  ...(r.ranking?.best && r.ranking.best !== r.ranking.inUse && want !== 'best' ? ['  Frame it on the best lens with: --lens best'] : []),
+  'Check it with: agent-eye snapshot --out look.jpg'].join('\n'));
+}
+
+async function cmdFocus(flags, what = 'scan') {
+  const { path, profile } = requireConfig(flags);
+  const region = regionFlag(flags, profile);
+  if (what === 'auto') {
+    const saved = saveChanges(path, profile.name, { focus: null, ...(region && { focusRegion: region }) });
+    return print(flags, { ok: true, profile: profile.name, saved }, `Profile "${profile.name}": continuous autofocus${saved.focusRegion ? ' on the focus area' : ''}.`);
+  }
+  if (what !== 'scan') {
+    const d = Number(what);
+    if (!Number.isFinite(d) || d < 0) throw new UserError(`focus takes scan, auto or a distance in diopters (got "${what}").`, { code: 2 });
+    const saved = saveChanges(path, profile.name, { focus: d, ...(region && { focusRegion: region }) });
+    return print(flags, { ok: true, profile: profile.name, saved }, `Profile "${profile.name}": focus fixed at ${d} D (${cmOf(d) ?? 'infinity'}${d > 0 ? ' cm' : ''}).`);
+  }
+  await withPhone(flags, async ({ caps, session }) => {
+    if (!caps.focusRange) throw new UserError('This camera has no manual focus.', { code: 2 });
+    const c = profile.crop, full = !c || (c.x === 0 && c.y === 0 && c.w === 1 && c.h === 1);
+    const area = region ?? profile.focusRegion ?? (full ? null : c);
+    const scan = await session.control.scan(area && caps.afRegions ? viewToCamera(area, profile.rotate ?? 0) : null);
+    if (!scan) throw new UserError('Autofocus did not finish.', { code: 3 });
+    const focus = Math.min(Math.round(scan.focus * 100) / 100, caps.focusRange[1]); // a lens at its nearest reports a bit past it
+    const saved = saveChanges(path, profile.name, { focus, ...(region && caps.afRegions && { focusRegion: region }) });
+    print(flags, { ok: true, profile: profile.name, focus, distanceCm: cmOf(focus), sure: scan.ok, saved },
+      `Profile "${profile.name}": focus fixed at ${focus} D (${cmOf(focus)} cm)${scan.ok ? '' : '. Autofocus was not sure: check with a snapshot.'}`);
+  });
 }
 
 async function cmdWeb(flags, mode) {
@@ -314,7 +497,9 @@ export async function main(argv) {
       case 'setup': return await cmdSetup(flags);
       case 'doctor': { const r = await doctor(); print(flags, r, r.checks.map((c) => `${c.ok ? '✓' : '✗'} ${c.name}: ${c.detail}${c.fix ? `  → ${c.fix}` : ''}`).join('\n')); process.exitCode = r.ok ? 0 : 3; return; }
       case 'devices': { const r = await listDevices({ capabilities: !!flags.caps }); print(flags, r, [...r.devices.map((d) => `${d.id}\n    ${d.name}${d.maxSize ? `, up to ${d.maxSize}` : ''}`), ...r.problems.map((p) => `! ${p.model}: ${p.hint}`)].join('\n') || 'No cameras found.'); return; }
-      case 'configure': return flags.set !== undefined ? await cmdConfigureJson(flags) : await cmdWeb(flags, 'configure');
+      case 'configure': return flags.set !== undefined || flags.update !== undefined ? await cmdConfigureJson(flags) : await cmdWeb(flags, 'configure');
+      case 'frame': return await cmdFrame(flags);
+      case 'focus': return await cmdFocus(flags, parsed.rest[0]);
       case 'preview': return await cmdWeb(flags, 'preview');
       case 'show': { const { path, profile } = requireConfig(flags); print(flags, { configPath: path, profile }, `${path}\n${JSON.stringify(profile, null, 2)}`); return; }
       case 'snapshot': { if (!flags.out) throw new UserError('--out FILE.jpg is required', { code: 2 }); const warmupMs = numFlag(flags, 'warmup', (v) => v >= 0 && v <= 60000, 'milliseconds between 0 and 60000'); const { profile } = requireConfig(flags); const abort = new AbortController(); abortOnSignals(abort); const r = await takeSnapshot(profile, flags.out, { warmupMs, signal: abort.signal }); print(flags, r, `Saved ${r.file}`); return; }
