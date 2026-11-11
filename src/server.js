@@ -32,6 +32,19 @@ async function readJson(req) {
 const conflict = (message) => Object.assign(new UserError(message), { status: 409 });
 // Settings that change the picture: a confirmation still must come from a preview opened with all of them.
 const IMAGE_KEYS = ['source', 'width', 'height', 'fps', 'zoom', 'rotate', 'focus', 'exposureLock', 'whiteBalanceLock'];
+// Settings that need the camera reopened; the others change on the running camera (liveChange).
+const REOPEN_KEYS = ['source', 'width', 'height', 'fps', 'rotate', 'bitrate'];
+const sameRect = (a, b) => (!a && !b) || (a && b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h);
+/** The live changes that turn profile `a` into `b` (a body for liveChange). */
+function liveDiff(a, b) {
+  const d = {};
+  if ((a.zoom ?? 1) !== (b.zoom ?? 1)) d.zoom = b.zoom ?? 1;
+  if (!sameRect(a.focusRegion, b.focusRegion)) d.focusRegion = b.focusRegion ?? null;
+  if (a.focus !== b.focus) d.focus = b.focus ?? 'auto';
+  if (!!a.exposureLock !== !!b.exposureLock) d.exposureLock = !!b.exposureLock;
+  if (!!a.whiteBalanceLock !== !!b.whiteBalanceLock) d.whiteBalanceLock = !!b.whiteBalanceLock;
+  return d;
+}
 
 /**
  * Local web UI for configuring and previewing a camera.
@@ -71,6 +84,14 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
     return serial(async () => {
       if (closing) throw new UserError('The page is closing.');
       if (request !== latestRequest) throw conflict('A newer preview request replaced this one.');
+      // The camera already open with the same mode (a reloaded page): keep it, and change zoom, focus and
+      // locks live. Reopening it would mean the lens starting from infinity and exposure metering again.
+      const p = preview;
+      if (p && REOPEN_KEYS.every((k) => p.profile[k] === profile[k])) {
+        const diff = liveDiff(p.profile, profile);
+        if (!Object.keys(diff).length) { p.profile = profile; return p; }
+        if (p.session.control) { await liveChange(p, diff); p.profile = profile; return p; }
+      }
       await stopPreview();
       return openPreview(profile);
     });
@@ -86,7 +107,9 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
         res.write(head); res.write(frame); res.write('\r\n');
       }
     });
-    state.session = await startSession(profile, previewOutputArgs(profile, { width: 960, fps: 15, quality: 6, applyCrop: false }), { onStdout: (d) => splitter.push(d) });
+    // waitReady: the page shows the picture once focus and exposure have settled, not the camera searching
+    state.session = await startSession(profile, previewOutputArgs(profile, { width: 960, fps: 15, quality: 6, applyCrop: false }),
+      { onStdout: (d) => splitter.push(d), waitReady: true });
     state.session.closed.then(() => { if (preview === state) { clearTimeout(state.idleTimer); for (const c of state.clients) c.end(); preview = null; } });
     preview = state;
     releaseWhenUnwatched(state);
@@ -113,8 +136,8 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
   };
 
   /** Zoom, focus, focus region and locks changed on the running camera; the preview's profile follows. */
-  const applyLive = (body) => serial(async () => {
-    const p = livePreview();
+  const applyLive = (body) => serial(() => liveChange(livePreview(), body));
+  async function liveChange(p, body) {
     const c = p.session.control;
     const next = { ...p.profile };
     if (body.zoom !== undefined) { await c.zoom(body.zoom); next.zoom = body.zoom; }
@@ -133,7 +156,7 @@ export async function serveConfigurator({ configPath, projectRoot, mode, profile
     }
     p.profile = normalizeProfile(next);
     return { ok: true, profile: p.profile };
-  });
+  }
 
   const route = {
     'GET /api/state': async () => ({ mode, configPath, config: cfg, profileName: profileName ?? cfg.default ?? null,

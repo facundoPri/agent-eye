@@ -131,11 +131,12 @@ export async function cropJpeg(jpeg, crop) {
   });
 }
 
-/** One full-resolution still with the profile's framing applied. Waits so exposure and focus settle. */
-export async function takeSnapshot(profile, outPath, { warmupMs = 2000, signal } = {}) {
+/** One full-resolution still with the profile's framing applied, taken once focus and exposure have settled. */
+export async function takeSnapshot(profile, outPath, { warmupMs = 700, signal } = {}) {
   let latest = null, frames = 0;
   const splitter = new JpegSplitter((f) => { latest = Buffer.from(f); frames += 1; });
-  const session = await startSession(profile, previewOutputArgs(profile, { width: 0, fps: 5, quality: 2, applyCrop: true }), { onStdout: (d) => splitter.push(d), signal });
+  const session = await startSession(profile, previewOutputArgs(profile, { width: 0, fps: 5, quality: 2, applyCrop: true }), { onStdout: (d) => splitter.push(d), signal, waitReady: true });
+  // after focus and exposure settled (waitReady), a few frames more so the still is one taken after that
   const waited = Date.now();
   while ((Date.now() - waited < warmupMs || frames < 3) && Date.now() - waited < warmupMs + 6000 && !signal?.aborted) {
     if (await Promise.race([session.closed, raceTimer(100).then(() => null)])) break;

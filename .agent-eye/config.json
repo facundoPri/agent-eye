@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "default": "default",
+  "profiles": {
+    "default": {
+      "source": "android:ZY22H5XCNT/4",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "zoom": 1.86,
+      "crop": {
+        "x": 0.0013,
+        "y": 0.2752,
+        "w": 0.6368,
+        "h": 0.6368
+      },
+      "rotate": 0,
+      "focus": 4.2,
+      "focusRegion": {
+        "x": 0.0511,
+        "y": 0.3093,
+        "w": 0.5371,
+        "h": 0.5686
+      },
+      "exposureLock": true,
+      "whiteBalanceLock": true,
+      "confirmedAt": "2026-11-11T03:47:56.293Z"
+    }
+  }
+}

@@ -59,8 +59,9 @@ test('slow motion options: high speed above 60 fps, encoder rate above 120', () 
   assert.ok(hs240.includes('video_bit_rate=40000000'));
 });
 
-test('native zoom is sent only above 1x; bitrate override wins', () => {
+test('native zoom is sent unless 1x (below 1x too: the ultrawide); bitrate override wins', () => {
   assert.ok(!androidServerOptions(android, 0).some((o) => o.startsWith('camera_zoom')));
+  assert.ok(androidServerOptions({ ...android, zoom: 0.61 }, 4).includes('camera_zoom=0.61'));
   const o = androidServerOptions({ ...android, zoom: 2.5, bitrate: 12 }, 1);
   assert.ok(o.includes('camera_zoom=2.5') && o.includes('camera_id=1') && o.includes('video_bit_rate=12000000'));
 });

@@ -67,7 +67,8 @@ export function androidServerOptions(profile, cameraId) {
     // and commands on stdin to change zoom, focus and locks without restarting the camera (session.control).
     'camera_3a_report=true', 'camera_commands=true',
   ];
-  if (profile.zoom > 1) opts.push(`camera_zoom=${profile.zoom}`);
+  // below 1x too: the camera that switches lenses reaches the ultrawide at 0.5-0.6x
+  if (profile.zoom !== undefined && profile.zoom !== 1) opts.push(`camera_zoom=${profile.zoom}`);
   if (profile.focus !== undefined) opts.push(`camera_focus=${profile.focus}`);
   if (profile.focusRegion) opts.push(`camera_af_region=${regionArg(viewToCamera(profile.focusRegion, profile.rotate ?? 0))}`);
   // Locks engage 1.5 s after the camera starts, once auto exposure and white balance have settled on the scene.

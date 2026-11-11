@@ -49,10 +49,7 @@ When asked to (or when the human approved changing the profile), you can do it y
 - `agent-eye focus scan --region x,y,w,h`: autofocus once on that part of the picture (fractions
   of the snapshot) and fix the focus there. `agent-eye focus auto` / `agent-eye focus 4.25`.
 - `agent-eye frame --region x,y,w,h`: frame that part (camera zoom first, then a centred crop)
-  and focus on it. Read its `notes` and `lenses` (sensor pixels each lens puts across the region,
-  or why it cannot), then take a snapshot to check. `--lens best` moves the profile to the lens
-  with the most detail that can focus there; `--lens N` (numbered from the widest, as `devices`
-  lists them) or `--lens auto` (the phone switches with the zoom) choose one.
+  and focus on it. Read its `notes`, then take a snapshot to check.
 - `agent-eye configure --update '{"exposureLock": true}'`: change single fields (`null` removes).
 
 Use `--profile <name>` on a profile of your own unless asked to change the human's. With autofocus the first ~1.5 s of the file are the camera searching

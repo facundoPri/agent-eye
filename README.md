@@ -155,6 +155,12 @@ fixed focus and both locks hold at 30, 60, 120 and 240 fps.
   as started only once focus has settled and the locks are on, so what happens after `start`
   returns is filmed in focus; the file itself begins with that search (`camera.focus.settledAtMs`,
   host clock, says when it ended).
+- Every time the camera opens, the lens starts at infinity and exposure meters the scene again
+  (1-2 s; with a fixed focus the lens goes straight to its distance instead of searching). The
+  page shows the picture only after that, `snapshot` takes its still after it, and reloading the
+  page keeps the camera already open (zoom, focus and locks change on it) instead of reopening it.
+  Commands that film (`record`, `start`, `snapshot`, `frame`) open the camera themselves, so each
+  has this start.
 
 ### Framing a selection
 

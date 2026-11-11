@@ -1,7 +1,7 @@
 // The configure/preview web server against fake tools (see helpers/fakes.js). No hardware.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { join } from 'node:path';
@@ -63,6 +63,22 @@ test('concurrent preview starts leave one camera session, and closing releases i
   assert.equal((await s.call('GET', '/api/preview/stats')).body.id, c.body.id, 'the newest request wins');
   await s.close();
   assert.equal(live().length, 0);
+}));
+
+test('a reloaded page keeps the open camera: zoom and focus change live, a new mode reopens it', () => withEnv(fakes.env, async () => {
+  rmSync(join(fakes.dir, 'commands'), { force: true });
+  const s = await open();
+  const servers = fakes.started('adbserver');
+  const first = (await s.call('POST', '/api/preview/start', { profile: ANDROID_PROFILE })).body.id;
+  const same = (await s.call('POST', '/api/preview/start', { profile: ANDROID_PROFILE })).body.id;
+  const zoomed = (await s.call('POST', '/api/preview/start', { profile: { ...ANDROID_PROFILE, zoom: 2, focus: 3 } })).body.id;
+  assert.equal(same, first); assert.equal(zoomed, first);
+  assert.equal(fakes.started('adbserver'), servers + 1, 'the camera was opened once');
+  assert.deepEqual(readFileSync(join(fakes.dir, 'commands'), 'utf8').trim().split('\n'), ['zoom 2', 'focus 3']);
+  const other = (await s.call('POST', '/api/preview/start', { profile: { ...ANDROID_PROFILE, fps: 60 } })).body.id;
+  assert.notEqual(other, first);
+  assert.equal(fakes.started('adbserver'), servers + 2);
+  await s.close();
 }));
 
 test('closing while a preview is still opening waits for it and releases it', () => withEnv(fakes.env, async () => {
